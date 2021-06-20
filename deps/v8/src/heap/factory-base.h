@@ -35,6 +35,7 @@ class BytecodeArray;
 class CoverageInfo;
 class ClassPositions;
 struct SourceRange;
+enum class Builtin : int32_t;
 template <typename T>
 class ZoneVector;
 
@@ -170,18 +171,18 @@ class EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE) FactoryBase
 
   Handle<CoverageInfo> NewCoverageInfo(const ZoneVector<SourceRange>& slots);
 
-  Handle<String> InternalizeString(const Vector<const uint8_t>& string,
+  Handle<String> InternalizeString(const base::Vector<const uint8_t>& string,
                                    bool convert_encoding = false);
-  Handle<String> InternalizeString(const Vector<const uint16_t>& string,
+  Handle<String> InternalizeString(const base::Vector<const uint16_t>& string,
                                    bool convert_encoding = false);
 
   template <class StringTableKey>
   Handle<String> InternalizeStringWithKey(StringTableKey* key);
 
   Handle<SeqOneByteString> NewOneByteInternalizedString(
-      const Vector<const uint8_t>& str, uint32_t raw_hash_field);
+      const base::Vector<const uint8_t>& str, uint32_t raw_hash_field);
   Handle<SeqTwoByteString> NewTwoByteInternalizedString(
-      const Vector<const uc16>& str, uint32_t raw_hash_field);
+      const base::Vector<const uc16>& str, uint32_t raw_hash_field);
 
   Handle<SeqOneByteString> AllocateRawOneByteInternalizedString(
       int length, uint32_t raw_hash_field);
@@ -228,14 +229,19 @@ class EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE) FactoryBase
   Handle<SwissNameDictionary> NewSwissNameDictionaryWithCapacity(
       int capacity, AllocationType allocation);
 
+  Handle<FunctionTemplateRareData> NewFunctionTemplateRareData();
+
  protected:
   // Allocate memory for an uninitialized array (e.g., a FixedArray or similar).
   HeapObject AllocateRawArray(int size, AllocationType allocation);
   HeapObject AllocateRawFixedArray(int length, AllocationType allocation);
   HeapObject AllocateRawWeakArrayList(int length, AllocationType allocation);
 
-  Struct NewStructInternal(InstanceType type,
-                           AllocationType allocation = AllocationType::kYoung);
+  template <typename StructType>
+  inline StructType NewStructInternal(InstanceType type,
+                                      AllocationType allocation);
+  Struct NewStructInternal(ReadOnlyRoots roots, Map map, int size,
+                           AllocationType allocation);
 
   HeapObject AllocateRawWithImmortalMap(
       int size, AllocationType allocation, Map map,
@@ -249,7 +255,7 @@ class EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE) FactoryBase
   Handle<SharedFunctionInfo> NewSharedFunctionInfo();
   Handle<SharedFunctionInfo> NewSharedFunctionInfo(
       MaybeHandle<String> maybe_name,
-      MaybeHandle<HeapObject> maybe_function_data, int maybe_builtin_index,
+      MaybeHandle<HeapObject> maybe_function_data, Builtin builtin,
       FunctionKind kind = kNormalFunction);
 
   Handle<String> MakeOrFindTwoCharacterString(uint16_t c1, uint16_t c2);

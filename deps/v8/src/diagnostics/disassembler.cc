@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "src/base/memory.h"
+#include "src/base/vector.h"
 #include "src/codegen/assembler-inl.h"
 #include "src/codegen/code-comments.h"
 #include "src/codegen/code-reference.h"
@@ -22,7 +23,6 @@
 #include "src/objects/objects-inl.h"
 #include "src/snapshot/embedded/embedded-data.h"
 #include "src/strings/string-stream.h"
-#include "src/utils/vector.h"
 
 #if V8_ENABLE_WEBASSEMBLY
 #include "src/wasm/wasm-code-manager.h"
@@ -50,7 +50,7 @@ class V8NameConverter : public disasm::NameConverter {
   Isolate* isolate_;
   CodeReference code_;
 
-  EmbeddedVector<char, 128> v8_buffer_;
+  base::EmbeddedVector<char, 128> v8_buffer_;
 
   // Map from root-register relative offset of the external reference value to
   // the external reference name (stored in the external reference table).
@@ -129,7 +129,7 @@ const char* V8NameConverter::RootRelativeName(int offset) const {
   const unsigned kExtRefsTableSize = ExternalReferenceTable::kSizeInBytes;
   const int kBuiltinsTableStart = IsolateData::builtins_table_offset();
   const unsigned kBuiltinsTableSize =
-      Builtins::builtin_count * kSystemPointerSize;
+      Builtins::kBuiltinCount * kSystemPointerSize;
 
   if (static_cast<unsigned>(offset - kRootsTableStart) < kRootsTableSize) {
     uint32_t offset_in_roots_table = offset - kRootsTableStart;
@@ -166,10 +166,9 @@ const char* V8NameConverter::RootRelativeName(int offset) const {
              kBuiltinsTableSize) {
     uint32_t offset_in_builtins_table = (offset - kBuiltinsTableStart);
 
-    Builtins::Name builtin_id = static_cast<Builtins::Name>(
-        offset_in_builtins_table / kSystemPointerSize);
-
-    const char* name = Builtins::name(builtin_id);
+    Builtin builtin =
+        Builtins::FromInt(offset_in_builtins_table / kSystemPointerSize);
+    const char* name = Builtins::name(builtin);
     SNPrintF(v8_buffer_, "builtin (%s)", name);
     return v8_buffer_.begin();
 
@@ -237,10 +236,11 @@ static void PrintRelocInfo(StringBuilder* out, Isolate* isolate,
     out->AddFormatted("    ;; %sobject: %s",
                       is_compressed ? "(compressed) " : "", obj_name.get());
   } else if (rmode == RelocInfo::EXTERNAL_REFERENCE) {
+    Address address = relocinfo->target_external_reference();
     const char* reference_name =
-        ref_encoder ? ref_encoder->NameOfAddress(
-                          isolate, relocinfo->target_external_reference())
-                    : "unknown";
+        ref_encoder
+            ? ref_encoder->NameOfAddress(isolate, address)
+            : ExternalReferenceTable::NameOfIsolateIndependentAddress(address);
     out->AddFormatted("    ;; external reference (%s)", reference_name);
   } else if (RelocInfo::IsCodeTargetMode(rmode)) {
     out->AddFormatted("    ;; code:");
@@ -248,7 +248,7 @@ static void PrintRelocInfo(StringBuilder* out, Isolate* isolate,
         relocinfo->target_address());
     CodeKind kind = code.kind();
     if (code.is_builtin()) {
-      out->AddFormatted(" Builtin::%s", Builtins::name(code.builtin_index()));
+      out->AddFormatted(" Builtin::%s", Builtins::name(code.builtin_id()));
     } else {
       out->AddFormatted(" %s", CodeKindToString(kind));
     }
@@ -280,8 +280,8 @@ static int DecodeIt(Isolate* isolate, ExternalReferenceEncoder* ref_encoder,
                     const V8NameConverter& converter, byte* begin, byte* end,
                     Address current_pc) {
   CHECK(!code.is_null());
-  v8::internal::EmbeddedVector<char, 128> decode_buffer;
-  v8::internal::EmbeddedVector<char, kOutBufferSize> out_buffer;
+  v8::base::EmbeddedVector<char, 128> decode_buffer;
+  v8::base::EmbeddedVector<char, kOutBufferSize> out_buffer;
   StringBuilder out(out_buffer.begin(), out_buffer.length());
   byte* pc = begin;
   disasm::Disassembler d(converter,
@@ -441,14 +441,16 @@ int Disassembler::Decode(Isolate* isolate, std::ostream* os, byte* begin,
                   "Builtins disassembly requires a readable .text section");
   V8NameConverter v8NameConverter(isolate, code);
   if (isolate) {
-    // We have an isolate, so support external reference names.
+    // We have an isolate, so support external reference names from V8 and
+    // embedder.
     SealHandleScope shs(isolate);
     DisallowGarbageCollection no_alloc;
     ExternalReferenceEncoder ref_encoder(isolate);
     return DecodeIt(isolate, &ref_encoder, os, code, v8NameConverter, begin,
                     end, current_pc);
   } else {
-    // No isolate => isolate-independent code. No external reference names.
+    // No isolate => isolate-independent code. Only V8 External references
+    // available.
     return DecodeIt(nullptr, nullptr, os, code, v8NameConverter, begin, end,
                     current_pc);
   }

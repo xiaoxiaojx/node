@@ -88,8 +88,9 @@ static const char* reason(const i::DeoptimizeReason reason) {
 
 TEST(StartStop) {
   i::Isolate* isolate = CcTest::i_isolate();
+  CodeEntryStorage storage;
   CpuProfilesCollection profiles(isolate);
-  ProfilerCodeObserver code_observer(isolate);
+  ProfilerCodeObserver code_observer(isolate, storage);
   Symbolizer symbolizer(code_observer.code_map());
   std::unique_ptr<ProfilerEventsProcessor> processor(
       new SamplingEventsProcessor(
@@ -137,8 +138,8 @@ class TestSetup {
 
 i::AbstractCode CreateCode(i::Isolate* isolate, LocalContext* env) {
   static int counter = 0;
-  i::EmbeddedVector<char, 256> script;
-  i::EmbeddedVector<char, 32> name;
+  base::EmbeddedVector<char, 256> script;
+  base::EmbeddedVector<char, 32> name;
 
   i::SNPrintF(name, "function_%d", ++counter);
   const char* name_start = name.begin();
@@ -171,15 +172,16 @@ TEST(CodeEvents) {
   i::Handle<i::AbstractCode> comment2_code(CreateCode(isolate, &env), isolate);
   i::Handle<i::AbstractCode> moved_code(CreateCode(isolate, &env), isolate);
 
+  CodeEntryStorage storage;
   CpuProfilesCollection* profiles = new CpuProfilesCollection(isolate);
-  ProfilerCodeObserver code_observer(isolate);
+  ProfilerCodeObserver code_observer(isolate, storage);
   Symbolizer* symbolizer = new Symbolizer(code_observer.code_map());
   ProfilerEventsProcessor* processor = new SamplingEventsProcessor(
       isolate, symbolizer, &code_observer, profiles,
       v8::base::TimeDelta::FromMicroseconds(100), true);
   CHECK(processor->Start());
   ProfilerListener profiler_listener(isolate, processor,
-                                     *code_observer.strings(),
+                                     *code_observer.code_entries(),
                                      *code_observer.weak_code_registry());
   isolate->logger()->AddCodeEventListener(&profiler_listener);
 
@@ -234,8 +236,10 @@ TEST(TickEvents) {
   i::Handle<i::AbstractCode> frame2_code(CreateCode(isolate, &env), isolate);
   i::Handle<i::AbstractCode> frame3_code(CreateCode(isolate, &env), isolate);
 
+  CodeEntryStorage storage;
   CpuProfilesCollection* profiles = new CpuProfilesCollection(isolate);
-  ProfilerCodeObserver* code_observer = new ProfilerCodeObserver(isolate);
+  ProfilerCodeObserver* code_observer =
+      new ProfilerCodeObserver(isolate, storage);
   Symbolizer* symbolizer = new Symbolizer(code_observer->code_map());
   ProfilerEventsProcessor* processor = new SamplingEventsProcessor(
       CcTest::i_isolate(), symbolizer, code_observer, profiles,
@@ -245,7 +249,7 @@ TEST(TickEvents) {
   profiles->StartProfiling("");
   CHECK(processor->Start());
   ProfilerListener profiler_listener(isolate, processor,
-                                     *code_observer->strings(),
+                                     *code_observer->code_entries(),
                                      *code_observer->weak_code_registry());
   isolate->logger()->AddCodeEventListener(&profiler_listener);
 
@@ -396,8 +400,10 @@ TEST(Issue1398) {
 
   i::Handle<i::AbstractCode> code(CreateCode(isolate, &env), isolate);
 
+  CodeEntryStorage storage;
   CpuProfilesCollection* profiles = new CpuProfilesCollection(isolate);
-  ProfilerCodeObserver* code_observer = new ProfilerCodeObserver(isolate);
+  ProfilerCodeObserver* code_observer =
+      new ProfilerCodeObserver(isolate, storage);
   Symbolizer* symbolizer = new Symbolizer(code_observer->code_map());
   ProfilerEventsProcessor* processor = new SamplingEventsProcessor(
       CcTest::i_isolate(), symbolizer, code_observer, profiles,
@@ -407,7 +413,7 @@ TEST(Issue1398) {
   profiles->StartProfiling("");
   CHECK(processor->Start());
   ProfilerListener profiler_listener(isolate, processor,
-                                     *code_observer->strings(),
+                                     *code_observer->code_entries(),
                                      *code_observer->weak_code_registry());
 
   profiler_listener.CodeCreateEvent(i::Logger::BUILTIN_TAG, code, "bbb");
@@ -546,7 +552,8 @@ class ProfilerHelper {
       v8::Local<v8::Function> function, v8::Local<v8::Value> argv[], int argc,
       unsigned min_js_samples = 0, unsigned min_external_samples = 0,
       ProfilingMode mode = ProfilingMode::kLeafNodeLineNumbers,
-      unsigned max_samples = v8::CpuProfilingOptions::kNoSampleLimit);
+      unsigned max_samples = v8::CpuProfilingOptions::kNoSampleLimit,
+      v8::Local<v8::Context> context = v8::Local<v8::Context>());
 
   v8::CpuProfiler* profiler() { return profiler_; }
 
@@ -559,11 +566,12 @@ v8::CpuProfile* ProfilerHelper::Run(v8::Local<v8::Function> function,
                                     v8::Local<v8::Value> argv[], int argc,
                                     unsigned min_js_samples,
                                     unsigned min_external_samples,
-                                    ProfilingMode mode, unsigned max_samples) {
+                                    ProfilingMode mode, unsigned max_samples,
+                                    v8::Local<v8::Context> context) {
   v8::Local<v8::String> profile_name = v8_str("my_profile");
 
   profiler_->SetSamplingInterval(50);
-  profiler_->StartProfiling(profile_name, {mode, max_samples, 0});
+  profiler_->StartProfiling(profile_name, {mode, max_samples, 0, context});
 
   v8::internal::CpuProfiler* iprofiler =
       reinterpret_cast<v8::internal::CpuProfiler*>(profiler_);
@@ -1217,9 +1225,9 @@ static void TickLines(bool optimize) {
   i::Factory* factory = isolate->factory();
   i::HandleScope scope(isolate);
 
-  i::EmbeddedVector<char, 512> script;
-  i::EmbeddedVector<char, 64> prepare_opt;
-  i::EmbeddedVector<char, 64> optimize_call;
+  base::EmbeddedVector<char, 512> script;
+  base::EmbeddedVector<char, 64> prepare_opt;
+  base::EmbeddedVector<char, 64> optimize_call;
 
   const char* func_name = "func";
   if (optimize) {
@@ -1260,8 +1268,10 @@ static void TickLines(bool optimize) {
   i::Address code_address = code->raw_instruction_start();
   CHECK_NE(code_address, kNullAddress);
 
+  CodeEntryStorage storage;
   CpuProfilesCollection* profiles = new CpuProfilesCollection(isolate);
-  ProfilerCodeObserver* code_observer = new ProfilerCodeObserver(isolate);
+  ProfilerCodeObserver* code_observer =
+      new ProfilerCodeObserver(isolate, storage);
   Symbolizer* symbolizer = new Symbolizer(code_observer->code_map());
   ProfilerEventsProcessor* processor = new SamplingEventsProcessor(
       CcTest::i_isolate(), symbolizer, code_observer, profiles,
@@ -1276,7 +1286,7 @@ static void TickLines(bool optimize) {
   isolate->logger()->LogCompiledFunctions();
   CHECK(processor->Start());
   ProfilerListener profiler_listener(isolate, processor,
-                                     *code_observer->strings(),
+                                     *code_observer->code_entries(),
                                      *code_observer->weak_code_registry());
 
   // Enqueue code creation events.
@@ -1318,7 +1328,7 @@ static void TickLines(bool optimize) {
 
   unsigned int line_count = func_node->GetHitLineCount();
   CHECK_EQ(2u, line_count);  // Expect two hit source lines - #1 and #5.
-  ScopedVector<v8::CpuProfileNode::LineTick> entries(line_count);
+  base::ScopedVector<v8::CpuProfileNode::LineTick> entries(line_count);
   CHECK(func_node->GetLineTicks(&entries[0], line_count));
   int value = 0;
   for (int i = 0; i < entries.length(); i++)
@@ -2471,7 +2481,7 @@ TEST(CollectDeoptEvents) {
       "\n";
 
   for (int i = 0; i < 3; ++i) {
-    i::EmbeddedVector<char, sizeof(opt_source) + 100> buffer;
+    base::EmbeddedVector<char, sizeof(opt_source) + 100> buffer;
     i::SNPrintF(buffer, opt_source, i, i);
     v8::Script::Compile(env, v8_str(buffer.begin()))
         .ToLocalChecked()
@@ -3472,8 +3482,9 @@ TEST(MaxSimultaneousProfiles) {
 
 TEST(LowPrecisionSamplingStartStopInternal) {
   i::Isolate* isolate = CcTest::i_isolate();
+  CodeEntryStorage storage;
   CpuProfilesCollection profiles(isolate);
-  ProfilerCodeObserver code_observer(isolate);
+  ProfilerCodeObserver code_observer(isolate, storage);
   Symbolizer symbolizer(code_observer.code_map());
   std::unique_ptr<ProfilerEventsProcessor> processor(
       new SamplingEventsProcessor(
@@ -3598,8 +3609,10 @@ TEST(ProflilerSubsampling) {
   i::Isolate* isolate = CcTest::i_isolate();
   i::HandleScope scope(isolate);
 
+  CodeEntryStorage storage;
   CpuProfilesCollection* profiles = new CpuProfilesCollection(isolate);
-  ProfilerCodeObserver* code_observer = new ProfilerCodeObserver(isolate);
+  ProfilerCodeObserver* code_observer =
+      new ProfilerCodeObserver(isolate, storage);
   Symbolizer* symbolizer = new Symbolizer(code_observer->code_map());
   ProfilerEventsProcessor* processor =
       new SamplingEventsProcessor(isolate, symbolizer, code_observer, profiles,
@@ -3642,8 +3655,10 @@ TEST(DynamicResampling) {
   i::Isolate* isolate = CcTest::i_isolate();
   i::HandleScope scope(isolate);
 
+  CodeEntryStorage storage;
   CpuProfilesCollection* profiles = new CpuProfilesCollection(isolate);
-  ProfilerCodeObserver* code_observer = new ProfilerCodeObserver(isolate);
+  ProfilerCodeObserver* code_observer =
+      new ProfilerCodeObserver(isolate, storage);
   Symbolizer* symbolizer = new Symbolizer(code_observer->code_map());
   ProfilerEventsProcessor* processor =
       new SamplingEventsProcessor(isolate, symbolizer, code_observer, profiles,
@@ -3703,8 +3718,10 @@ TEST(DynamicResamplingWithBaseInterval) {
   i::Isolate* isolate = CcTest::i_isolate();
   i::HandleScope scope(isolate);
 
+  CodeEntryStorage storage;
   CpuProfilesCollection* profiles = new CpuProfilesCollection(isolate);
-  ProfilerCodeObserver* code_observer = new ProfilerCodeObserver(isolate);
+  ProfilerCodeObserver* code_observer =
+      new ProfilerCodeObserver(isolate, storage);
   Symbolizer* symbolizer = new Symbolizer(code_observer->code_map());
   ProfilerEventsProcessor* processor =
       new SamplingEventsProcessor(isolate, symbolizer, code_observer, profiles,
@@ -3801,6 +3818,141 @@ TEST(Bug9151StaleCodeEntries) {
 
   auto* callback = FindChild(env.local(), start, "CallCollectSample");
   CHECK(callback);
+}
+
+// Tests that functions from other contexts aren't recorded when filtering for
+// another context.
+TEST(ContextIsolation) {
+  i::FLAG_allow_natives_syntax = true;
+  LocalContext execution_env;
+  i::HandleScope scope(CcTest::i_isolate());
+
+  // Install CollectSample callback for more deterministic sampling.
+  v8::Local<v8::FunctionTemplate> func_template = v8::FunctionTemplate::New(
+      execution_env.local()->GetIsolate(), CallCollectSample);
+  v8::Local<v8::Function> func =
+      func_template->GetFunction(execution_env.local()).ToLocalChecked();
+  func->SetName(v8_str("CallCollectSample"));
+  execution_env->Global()
+      ->Set(execution_env.local(), v8_str("CallCollectSample"), func)
+      .FromJust();
+
+  ProfilerHelper helper(execution_env.local());
+  CompileRun(R"(
+    function optimized() {
+      CallCollectSample();
+    }
+
+    function unoptimized() {
+      CallCollectSample();
+    }
+
+    function start() {
+      // Test optimized functions
+      %PrepareFunctionForOptimization(optimized);
+      optimized();
+      optimized();
+      %OptimizeFunctionOnNextCall(optimized);
+      optimized();
+
+      // Test unoptimized functions
+      %NeverOptimizeFunction(unoptimized);
+      unoptimized();
+
+      // Test callback
+      CallCollectSample();
+    }
+  )");
+  v8::Local<v8::Function> function =
+      GetFunction(execution_env.local(), "start");
+
+  v8::CpuProfile* same_context_profile = helper.Run(
+      function, nullptr, 0, 0, 0, v8::CpuProfilingMode::kLeafNodeLineNumbers,
+      v8::CpuProfilingOptions::kNoSampleLimit, execution_env.local());
+  const v8::CpuProfileNode* root = same_context_profile->GetTopDownRoot();
+  const v8::CpuProfileNode* start_node = FindChild(root, "start");
+  CHECK(start_node);
+  const v8::CpuProfileNode* optimized_node = FindChild(start_node, "optimized");
+  CHECK(optimized_node);
+  const v8::CpuProfileNode* unoptimized_node =
+      FindChild(start_node, "unoptimized");
+  CHECK(unoptimized_node);
+  const v8::CpuProfileNode* callback_node =
+      FindChild(start_node, "CallCollectSample");
+  CHECK(callback_node);
+
+  {
+    LocalContext filter_env;
+    v8::CpuProfile* diff_context_profile = helper.Run(
+        function, nullptr, 0, 0, 0, v8::CpuProfilingMode::kLeafNodeLineNumbers,
+        v8::CpuProfilingOptions::kNoSampleLimit, filter_env.local());
+    const v8::CpuProfileNode* diff_root =
+        diff_context_profile->GetTopDownRoot();
+    // Ensure that no children were recorded (including callbacks, builtins).
+    CHECK(!FindChild(diff_root, "start"));
+  }
+}
+
+// Tests that when a native context that's being filtered is moved, we continue
+// to track its execution.
+TEST(ContextFilterMovedNativeContext) {
+  if (i::FLAG_enable_third_party_heap) return;
+  i::FLAG_allow_natives_syntax = true;
+  i::FLAG_manual_evacuation_candidates_selection = true;
+  LocalContext env;
+  i::HandleScope scope(CcTest::i_isolate());
+
+  {
+    // Install CollectSample callback for more deterministic sampling.
+    v8::Local<v8::FunctionTemplate> sample_func_template =
+        v8::FunctionTemplate::New(env.local()->GetIsolate(), CallCollectSample);
+    v8::Local<v8::Function> sample_func =
+        sample_func_template->GetFunction(env.local()).ToLocalChecked();
+    sample_func->SetName(v8_str("CallCollectSample"));
+    env->Global()
+        ->Set(env.local(), v8_str("CallCollectSample"), sample_func)
+        .FromJust();
+
+    // Install a function that triggers the native context to be moved.
+    v8::Local<v8::FunctionTemplate> move_func_template =
+        v8::FunctionTemplate::New(
+            env.local()->GetIsolate(),
+            [](const v8::FunctionCallbackInfo<v8::Value>& info) {
+              i::Isolate* isolate =
+                  reinterpret_cast<i::Isolate*>(info.GetIsolate());
+              i::heap::ForceEvacuationCandidate(
+                  i::Page::FromHeapObject(isolate->raw_native_context()));
+              CcTest::CollectAllGarbage();
+            });
+    v8::Local<v8::Function> move_func =
+        move_func_template->GetFunction(env.local()).ToLocalChecked();
+    move_func->SetName(v8_str("ForceNativeContextMove"));
+    env->Global()
+        ->Set(env.local(), v8_str("ForceNativeContextMove"), move_func)
+        .FromJust();
+
+    ProfilerHelper helper(env.local());
+    CompileRun(R"(
+      function start() {
+        ForceNativeContextMove();
+        CallCollectSample();
+      }
+    )");
+    v8::Local<v8::Function> function = GetFunction(env.local(), "start");
+
+    v8::CpuProfile* profile = helper.Run(
+        function, nullptr, 0, 0, 0, v8::CpuProfilingMode::kLeafNodeLineNumbers,
+        v8::CpuProfilingOptions::kNoSampleLimit, env.local());
+    const v8::CpuProfileNode* root = profile->GetTopDownRoot();
+    const v8::CpuProfileNode* start_node = FindChild(root, "start");
+    CHECK(start_node);
+
+    // Verify that after moving the native context, CallCollectSample is still
+    // recorded.
+    const v8::CpuProfileNode* callback_node =
+        FindChild(start_node, "CallCollectSample");
+    CHECK(callback_node);
+  }
 }
 
 enum class EntryCountMode { kAll, kOnlyInlined };
@@ -3934,17 +4086,16 @@ UNINITIALIZED_TEST(DetailedSourcePositionAPI_Inlining) {
 namespace {
 
 struct FastApiReceiver {
-  static void FastCallback(v8::ApiObject receiver, int argument,
+  static void FastCallback(v8::Local<v8::Object> receiver, int argument,
                            v8::FastApiCallbackOptions& options) {
     // TODO(mslekova): The fallback is not used by the test. Replace this
     // with a CHECK.
-    v8::Object* receiver_obj = reinterpret_cast<v8::Object*>(&receiver);
-    if (!IsValidUnwrapObject(receiver_obj)) {
+    if (!IsValidUnwrapObject(*receiver)) {
       options.fallback = 1;
       return;
     }
     FastApiReceiver* receiver_ptr =
-        GetInternalField<FastApiReceiver, kV8WrapperObjectIndex>(receiver_obj);
+        GetInternalField<FastApiReceiver>(*receiver);
 
     receiver_ptr->result_ |= ApiCheckerResult::kFastCalled;
 
@@ -3957,11 +4108,10 @@ struct FastApiReceiver {
   static void SlowCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
     v8::Object* receiver_obj = v8::Object::Cast(*info.Holder());
     if (!IsValidUnwrapObject(receiver_obj)) {
-      info.GetIsolate()->ThrowException(v8_str("Called with a non-object."));
+      info.GetIsolate()->ThrowError("Called with a non-object.");
       return;
     }
-    FastApiReceiver* receiver =
-        GetInternalField<FastApiReceiver, kV8WrapperObjectIndex>(receiver_obj);
+    FastApiReceiver* receiver = GetInternalField<FastApiReceiver>(receiver_obj);
 
     receiver->result_ |= ApiCheckerResult::kSlowCalled;
   }

@@ -34,6 +34,10 @@
 
 #include "src/codegen/assembler.h"
 
+#ifdef V8_CODE_COMMENTS
+#include <iomanip>
+#endif
+#include "src/base/vector.h"
 #include "src/codegen/assembler-inl.h"
 #include "src/codegen/string-constants.h"
 #include "src/deoptimizer/deoptimizer.h"
@@ -43,7 +47,6 @@
 #include "src/snapshot/embedded/embedded-data.h"
 #include "src/snapshot/snapshot.h"
 #include "src/utils/ostreams.h"
-#include "src/utils/vector.h"
 
 namespace v8 {
 namespace internal {
@@ -69,7 +72,7 @@ AssemblerOptions AssemblerOptions::Default(Isolate* isolate) {
 #endif
   options.inline_offheap_trampolines &= !generating_embedded_builtin;
 #if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM64
-  const base::AddressRegion& code_range = isolate->heap()->code_range();
+  const base::AddressRegion& code_range = isolate->heap()->code_region();
   DCHECK_IMPLIES(code_range.begin() != kNullAddress, !code_range.is_empty());
   options.code_range_start = code_range.begin();
 #endif
@@ -96,7 +99,7 @@ namespace {
 class DefaultAssemblerBuffer : public AssemblerBuffer {
  public:
   explicit DefaultAssemblerBuffer(int size)
-      : buffer_(OwnedVector<uint8_t>::NewForOverwrite(size)) {
+      : buffer_(base::OwnedVector<uint8_t>::NewForOverwrite(size)) {
 #ifdef DEBUG
     ZapCode(reinterpret_cast<Address>(buffer_.start()), size);
 #endif
@@ -112,7 +115,7 @@ class DefaultAssemblerBuffer : public AssemblerBuffer {
   }
 
  private:
-  OwnedVector<uint8_t> buffer_;
+  base::OwnedVector<uint8_t> buffer_;
 };
 
 class ExternalAssemblerBufferImpl : public AssemblerBuffer {
@@ -180,7 +183,6 @@ AssemblerBase::AssemblerBase(const AssemblerOptions& options,
     : buffer_(std::move(buffer)),
       options_(options),
       enabled_cpu_features_(0),
-      emit_debug_code_(FLAG_debug_code),
       predictable_code_size_(false),
       constant_pool_available_(false),
       jump_optimization_info_(nullptr) {
@@ -298,6 +300,7 @@ Handle<HeapObject> AssemblerBase::GetEmbeddedObject(
 
 
 int Assembler::WriteCodeComments() {
+  if (!FLAG_code_comments) return 0;
   CHECK_IMPLIES(code_comments_writer_.entry_count() > 0,
                 options().emit_code_comments);
   if (code_comments_writer_.entry_count() == 0) return 0;
@@ -307,6 +310,25 @@ int Assembler::WriteCodeComments() {
   DCHECK_EQ(size, code_comments_writer_.section_size());
   return size;
 }
+
+#ifdef V8_CODE_COMMENTS
+int Assembler::CodeComment::depth() const { return assembler_->comment_depth_; }
+void Assembler::CodeComment::Open(const std::string& comment) {
+  std::stringstream sstream;
+  sstream << std::setfill(' ') << std::setw(depth() * kIndentWidth + 2);
+  sstream << "[ " << comment;
+  assembler_->comment_depth_++;
+  assembler_->RecordComment(sstream.str());
+}
+
+void Assembler::CodeComment::Close() {
+  assembler_->comment_depth_--;
+  std::string comment = "]";
+  comment.insert(0, depth() * kIndentWidth, ' ');
+  DCHECK_LE(0, depth());
+  assembler_->RecordComment(comment);
+}
+#endif
 
 }  // namespace internal
 }  // namespace v8

@@ -22,7 +22,8 @@ OBJECT_CONSTRUCTORS_IMPL(PropertyArray, HeapObject)
 CAST_ACCESSOR(PropertyArray)
 
 SMI_ACCESSORS(PropertyArray, length_and_hash, kLengthAndHashOffset)
-SYNCHRONIZED_SMI_ACCESSORS(PropertyArray, length_and_hash, kLengthAndHashOffset)
+RELEASE_ACQUIRE_SMI_ACCESSORS(PropertyArray, length_and_hash,
+                              kLengthAndHashOffset)
 
 Object PropertyArray::get(int index) const {
   PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
@@ -64,8 +65,8 @@ void PropertyArray::initialize_length(int len) {
   set_length_and_hash(len);
 }
 
-int PropertyArray::synchronized_length() const {
-  return LengthField::decode(synchronized_length_and_hash());
+int PropertyArray::length(AcquireLoadTag) const {
+  return LengthField::decode(length_and_hash(kAcquireLoad));
 }
 
 int PropertyArray::Hash() const { return HashField::decode(length_and_hash()); }
@@ -73,7 +74,7 @@ int PropertyArray::Hash() const { return HashField::decode(length_and_hash()); }
 void PropertyArray::SetHash(int hash) {
   int value = length_and_hash();
   value = HashField::update(value, hash);
-  set_length_and_hash(value);
+  set_length_and_hash(value, kReleaseStore);
 }
 
 void PropertyArray::CopyElements(Isolate* isolate, int dst_index,

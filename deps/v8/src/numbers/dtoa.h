@@ -5,7 +5,7 @@
 #ifndef V8_NUMBERS_DTOA_H_
 #define V8_NUMBERS_DTOA_H_
 
-#include "src/utils/vector.h"
+#include "src/base/vector.h"
 
 namespace v8 {
 namespace internal {
@@ -23,9 +23,14 @@ enum DtoaMode {
   DTOA_PRECISION
 };
 
-// The maximal length of digits a double can have in base 10.
-// Note that DoubleToAscii null-terminates its input. So the given buffer should
-// be at least kBase10MaximalLength + 1 characters long.
+// The maximal length of digits a double can have in base 10 as returned by
+// 'DoubleToAscii'. This does neither include sign, decimal point nor exponent.
+// For example DoubleToAscii(-3.5844466002796428e+298, ..., buffer, ...) will
+// fill buffer with the string "35844466002796428", while sign and decimal point
+// position will be provided through additional output arguments.
+// kBase10MaximalLength refers to the maximal length of this string. Note that
+// DoubleToAscii null-terminates its input. So the given buffer should be at
+// least kBase10MaximalLength + 1 characters long.
 const int kBase10MaximalLength = 17;
 
 // Converts the given double 'v' to ASCII.
@@ -57,8 +62,9 @@ const int kBase10MaximalLength = 17;
 // at least kBase10MaximalLength + 1. Otherwise, the size of the output is
 // limited to requested_digits digits plus the null terminator.
 V8_EXPORT_PRIVATE void DoubleToAscii(double v, DtoaMode mode,
-                                     int requested_digits, Vector<char> buffer,
-                                     int* sign, int* length, int* point);
+                                     int requested_digits,
+                                     base::Vector<char> buffer, int* sign,
+                                     int* length, int* point);
 
 }  // namespace internal
 }  // namespace v8

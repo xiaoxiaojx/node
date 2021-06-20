@@ -16,11 +16,12 @@
 #include "src/base/memory.h"
 #include "src/builtins/builtins.h"
 #include "src/common/external-pointer-inl.h"
+#include "src/common/globals.h"
 #include "src/handles/handles-inl.h"
 #include "src/heap/factory.h"
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/heap/read-only-heap-inl.h"
-#include "src/numbers/conversions.h"
+#include "src/numbers/conversions-inl.h"
 #include "src/numbers/double.h"
 #include "src/objects/bigint.h"
 #include "src/objects/heap-number-inl.h"
@@ -34,7 +35,6 @@
 #include "src/objects/property-details.h"
 #include "src/objects/property.h"
 #include "src/objects/regexp-match-info.h"
-#include "src/objects/scope-info-inl.h"
 #include "src/objects/shared-function-info.h"
 #include "src/objects/slots-inl.h"
 #include "src/objects/smi-inl.h"
@@ -42,7 +42,6 @@
 #include "src/objects/tagged-impl-inl.h"
 #include "src/objects/tagged-index.h"
 #include "src/objects/templates.h"
-#include "src/sanitizer/tsan.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -82,6 +81,7 @@ bool Object::IsTaggedIndex() const {
 HEAP_OBJECT_TYPE_LIST(IS_TYPE_FUNCTION_DEF)
 IS_TYPE_FUNCTION_DEF(HashTableBase)
 IS_TYPE_FUNCTION_DEF(SmallOrderedHashTable)
+IS_TYPE_FUNCTION_DEF(CodeT)
 #undef IS_TYPE_FUNCTION_DEF
 
 #define IS_TYPE_FUNCTION_DEF(Type, Value)                        \
@@ -145,6 +145,11 @@ bool HeapObject::IsNullOrUndefined(ReadOnlyRoots roots) const {
 
 bool HeapObject::IsNullOrUndefined() const {
   return IsNullOrUndefined(GetReadOnlyRoots());
+}
+
+DEF_GETTER(HeapObject, IsCodeT, bool) {
+  return V8_EXTERNAL_CODE_SPACE_BOOL ? IsCodeDataContainer(cage_base)
+                                     : IsCode(cage_base);
 }
 
 DEF_GETTER(HeapObject, IsUniqueName, bool) {
@@ -631,10 +636,9 @@ void Object::InitExternalPointerField(size_t offset, Isolate* isolate,
   i::InitExternalPointerField(field_address(offset), isolate, value, tag);
 }
 
-Address Object::ReadExternalPointerField(size_t offset,
-                                         PtrComprCageBase isolate_root,
+Address Object::ReadExternalPointerField(size_t offset, Isolate* isolate,
                                          ExternalPointerTag tag) const {
-  return i::ReadExternalPointerField(field_address(offset), isolate_root, tag);
+  return i::ReadExternalPointerField(field_address(offset), isolate, tag);
 }
 
 void Object::WriteExternalPointerField(size_t offset, Isolate* isolate,
@@ -650,11 +654,26 @@ MaybeObjectSlot HeapObject::RawMaybeWeakField(int byte_offset) const {
   return MaybeObjectSlot(field_address(byte_offset));
 }
 
-MapWord MapWord::FromMap(const Map map) { return MapWord(map.ptr()); }
+MapWord MapWord::FromMap(const Map map) {
+  DCHECK(map.is_null() || !MapWord::IsPacked(map.ptr()));
+#ifdef V8_MAP_PACKING
+  return MapWord(Pack(map.ptr()));
+#else
+  return MapWord(map.ptr());
+#endif
+}
 
-Map MapWord::ToMap() const { return Map::unchecked_cast(Object(value_)); }
+Map MapWord::ToMap() const {
+#ifdef V8_MAP_PACKING
+  return Map::unchecked_cast(Object(Unpack(value_)));
+#else
+  return Map::unchecked_cast(Object(value_));
+#endif
+}
 
-bool MapWord::IsForwardingAddress() const { return HAS_SMI_TAG(value_); }
+bool MapWord::IsForwardingAddress() const {
+  return (value_ & kForwardingTagMask) == kForwardingTag;
+}
 
 MapWord MapWord::FromForwardingAddress(HeapObject object) {
   return MapWord(object.ptr() - kHeapObjectTag);
@@ -697,7 +716,9 @@ ReadOnlyRoots HeapObject::GetReadOnlyRoots(PtrComprCageBase cage_base) const {
 #endif
 }
 
-DEF_GETTER(HeapObject, map, Map) { return map_word(cage_base).ToMap(); }
+DEF_GETTER(HeapObject, map, Map) {
+  return map_word(cage_base, kRelaxedLoad).ToMap();
+}
 
 void HeapObject::set_map(Map value) {
 #ifdef VERIFY_HEAP
@@ -705,7 +726,7 @@ void HeapObject::set_map(Map value) {
     GetHeapFromWritableObject(*this)->VerifyObjectLayoutChange(*this, value);
   }
 #endif
-  set_map_word(MapWord::FromMap(value));
+  set_map_word(MapWord::FromMap(value), kRelaxedStore);
 #ifndef V8_DISABLE_WRITE_BARRIERS
   if (!value.is_null()) {
     // TODO(1600) We are passing kNullAddress as a slot because maps can never
@@ -715,17 +736,21 @@ void HeapObject::set_map(Map value) {
 #endif
 }
 
-DEF_GETTER(HeapObject, synchronized_map, Map) {
-  return synchronized_map_word(cage_base).ToMap();
+Map HeapObject::map(AcquireLoadTag tag) const {
+  PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
+  return HeapObject::map(cage_base, tag);
+}
+Map HeapObject::map(PtrComprCageBase cage_base, AcquireLoadTag tag) const {
+  return map_word(cage_base, tag).ToMap();
 }
 
-void HeapObject::synchronized_set_map(Map value) {
+void HeapObject::set_map(Map value, ReleaseStoreTag tag) {
 #ifdef VERIFY_HEAP
   if (FLAG_verify_heap && !value.is_null()) {
     GetHeapFromWritableObject(*this)->VerifyObjectLayoutChange(*this, value);
   }
 #endif
-  synchronized_set_map_word(MapWord::FromMap(value));
+  set_map_word(MapWord::FromMap(value), tag);
 #ifndef V8_DISABLE_WRITE_BARRIERS
   if (!value.is_null()) {
     // TODO(1600) We are passing kNullAddress as a slot because maps can never
@@ -742,11 +767,12 @@ void HeapObject::set_map_no_write_barrier(Map value) {
     GetHeapFromWritableObject(*this)->VerifyObjectLayoutChange(*this, value);
   }
 #endif
-  set_map_word(MapWord::FromMap(value));
+  set_map_word(MapWord::FromMap(value), kRelaxedStore);
 }
 
 void HeapObject::set_map_after_allocation(Map value, WriteBarrierMode mode) {
-  set_map_word(MapWord::FromMap(value));
+  MapWord mapword = MapWord::FromMap(value);
+  set_map_word(mapword, kRelaxedStore);
 #ifndef V8_DISABLE_WRITE_BARRIERS
   if (mode != SKIP_WRITE_BARRIER) {
     DCHECK(!value.is_null());
@@ -761,20 +787,28 @@ ObjectSlot HeapObject::map_slot() const {
   return ObjectSlot(MapField::address(*this));
 }
 
-DEF_GETTER(HeapObject, map_word, MapWord) {
-  return MapField::Relaxed_Load(cage_base, *this);
+MapWord HeapObject::map_word(RelaxedLoadTag tag) const {
+  PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
+  return HeapObject::map_word(cage_base, tag);
+}
+MapWord HeapObject::map_word(PtrComprCageBase cage_base, RelaxedLoadTag) const {
+  return MapField::Relaxed_Load_Map_Word(cage_base, *this);
 }
 
-void HeapObject::set_map_word(MapWord map_word) {
-  MapField::Relaxed_Store(*this, map_word);
+void HeapObject::set_map_word(MapWord map_word, RelaxedStoreTag) {
+  MapField::Relaxed_Store_Map_Word(*this, map_word);
 }
 
-DEF_GETTER(HeapObject, synchronized_map_word, MapWord) {
-  return MapField::Acquire_Load(cage_base, *this);
+MapWord HeapObject::map_word(AcquireLoadTag tag) const {
+  PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
+  return HeapObject::map_word(cage_base, tag);
+}
+MapWord HeapObject::map_word(PtrComprCageBase cage_base, AcquireLoadTag) const {
+  return MapField::Acquire_Load_No_Unpack(cage_base, *this);
 }
 
-void HeapObject::synchronized_set_map_word(MapWord map_word) {
-  MapField::Release_Store(*this, map_word);
+void HeapObject::set_map_word(MapWord map_word, ReleaseStoreTag) {
+  MapField::Release_Store_Map_Word(*this, map_word);
 }
 
 bool HeapObject::release_compare_and_swap_map_word(MapWord old_map_word,
@@ -1081,8 +1115,7 @@ static inline uint32_t ObjectAddressForHashing(Address object) {
 static inline Handle<Object> MakeEntryPair(Isolate* isolate, size_t index,
                                            Handle<Object> value) {
   Handle<Object> key = isolate->factory()->SizeToString(index);
-  Handle<FixedArray> entry_storage =
-      isolate->factory()->NewUninitializedFixedArray(2);
+  Handle<FixedArray> entry_storage = isolate->factory()->NewFixedArray(2);
   {
     entry_storage->set(0, *key, SKIP_WRITE_BARRIER);
     entry_storage->set(1, *value, SKIP_WRITE_BARRIER);
@@ -1093,8 +1126,7 @@ static inline Handle<Object> MakeEntryPair(Isolate* isolate, size_t index,
 
 static inline Handle<Object> MakeEntryPair(Isolate* isolate, Handle<Object> key,
                                            Handle<Object> value) {
-  Handle<FixedArray> entry_storage =
-      isolate->factory()->NewUninitializedFixedArray(2);
+  Handle<FixedArray> entry_storage = isolate->factory()->NewFixedArray(2);
   {
     entry_storage->set(0, *key, SKIP_WRITE_BARRIER);
     entry_storage->set(1, *value, SKIP_WRITE_BARRIER);

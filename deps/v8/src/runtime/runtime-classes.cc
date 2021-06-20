@@ -188,7 +188,6 @@ Object GetMethodWithSharedName(
 template <typename Dictionary>
 Handle<Dictionary> ShallowCopyDictionaryTemplate(
     Isolate* isolate, Handle<Dictionary> dictionary_template) {
-  Handle<Map> dictionary_map(dictionary_template->map(), isolate);
   Handle<Dictionary> dictionary =
       Dictionary::ShallowCopy(isolate, dictionary_template);
   // Clone all AccessorPairs in the dictionary.
@@ -375,7 +374,7 @@ bool AddDescriptorsByTemplate(
   }
 
   // Atomically commit the changes.
-  receiver->synchronized_set_map(*map);
+  receiver->set_map(*map, kReleaseStore);
   if (elements_dictionary->NumberOfElements() > 0) {
     receiver->set_elements(*elements_dictionary);
   }
@@ -469,8 +468,8 @@ bool AddDescriptorsByTemplate(
   }
 
   // Atomically commit the changes.
-  receiver->synchronized_set_map(*map);
-  receiver->set_raw_properties_or_hash(*properties_dictionary);
+  receiver->set_map(*map, kReleaseStore);
+  receiver->set_raw_properties_or_hash(*properties_dictionary, kRelaxedStore);
   if (elements_dictionary->NumberOfElements() > 0) {
     receiver->set_elements(*elements_dictionary);
   }
@@ -498,7 +497,7 @@ bool InitClassPrototype(Isolate* isolate,
   map = Map::CopyDropDescriptors(isolate, map);
   map->set_is_prototype_map(true);
   Map::SetPrototype(isolate, map, prototype_parent);
-  constructor->set_prototype_or_initial_map(*prototype);
+  constructor->set_prototype_or_initial_map(*prototype, kReleaseStore);
   map->SetConstructor(*constructor);
   Handle<FixedArray> computed_properties(
       class_boilerplate->instance_computed_properties(), isolate);
@@ -707,11 +706,12 @@ MaybeHandle<JSReceiver> GetSuperHolder(Isolate* isolate,
   PrototypeIterator iter(isolate, home_object);
   Handle<Object> proto = PrototypeIterator::GetCurrent(iter);
   if (!proto->IsJSReceiver()) {
-    MessageTemplate message = mode == SuperMode::kLoad
-                                  ? MessageTemplate::kNonObjectPropertyLoad
-                                  : MessageTemplate::kNonObjectPropertyStore;
+    MessageTemplate message =
+        mode == SuperMode::kLoad
+            ? MessageTemplate::kNonObjectPropertyLoadWithProperty
+            : MessageTemplate::kNonObjectPropertyStoreWithProperty;
     Handle<Name> name = key->GetName(isolate);
-    THROW_NEW_ERROR(isolate, NewTypeError(message, name, proto), JSReceiver);
+    THROW_NEW_ERROR(isolate, NewTypeError(message, proto, name), JSReceiver);
   }
   return Handle<JSReceiver>::cast(proto);
 }

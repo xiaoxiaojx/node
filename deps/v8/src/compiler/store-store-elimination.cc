@@ -94,6 +94,8 @@ class UnobservablesSet final {
   // can probably be optimized to use a global singleton.
   static UnobservablesSet VisitedEmpty(Zone* zone);
   UnobservablesSet(const UnobservablesSet& other) V8_NOEXCEPT = default;
+  UnobservablesSet& operator=(const UnobservablesSet& other)
+      V8_NOEXCEPT = default;
 
   // Computes the intersection of two UnobservablesSets. If one of the sets is
   // empty, will return empty.
@@ -331,8 +333,8 @@ UnobservablesSet RedundantStoreFinder::RecomputeSet(
 bool RedundantStoreFinder::CannotObserveStoreField(Node* node) {
   IrOpcode::Value opcode = node->opcode();
   return opcode == IrOpcode::kLoadElement || opcode == IrOpcode::kLoad ||
-         opcode == IrOpcode::kStore || opcode == IrOpcode::kEffectPhi ||
-         opcode == IrOpcode::kStoreElement ||
+         opcode == IrOpcode::kLoadImmutable || opcode == IrOpcode::kStore ||
+         opcode == IrOpcode::kEffectPhi || opcode == IrOpcode::kStoreElement ||
          opcode == IrOpcode::kUnsafePointerAdd || opcode == IrOpcode::kRetain;
 }
 

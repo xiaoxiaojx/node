@@ -2616,7 +2616,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
     STATIC_ASSERT(sizeof(instruction) == kInstrSize);
     DCHECK_LE(pc_ + sizeof(instruction), buffer_start_ + buffer_->size());
 
-    base::Memcpy(pc_, &instruction, sizeof(instruction));
+    memcpy(pc_, &instruction, sizeof(instruction));
     pc_ += sizeof(instruction);
     CheckBuffer();
   }
@@ -2628,13 +2628,13 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
 
     // TODO(all): Somehow register we have some data here. Then we can
     // disassemble it correctly.
-    base::Memcpy(pc_, data, size);
+    memcpy(pc_, data, size);
     pc_ += size;
     CheckBuffer();
   }
 
   void GrowBuffer();
-  void CheckBufferSpace();
+  V8_INLINE void CheckBufferSpace();
   void CheckBuffer();
 
   // Emission of the veneer pools may be blocked in some code sequences.
@@ -2786,9 +2786,7 @@ class PatchingAssembler : public Assembler {
 
 class EnsureSpace {
  public:
-  explicit EnsureSpace(Assembler* assembler) : block_pools_scope_(assembler) {
-    assembler->CheckBufferSpace();
-  }
+  explicit V8_INLINE EnsureSpace(Assembler* assembler);
 
  private:
   Assembler::BlockPoolsScope block_pools_scope_;

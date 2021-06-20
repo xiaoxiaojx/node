@@ -90,13 +90,13 @@ inline constexpr uint16_t ToLatin1Lower(uint16_t ch) {
 
 // Does not work for U+00DF (sharp-s), U+00B5 (micron), U+00FF.
 inline constexpr uint16_t ToLatin1Upper(uint16_t ch) {
-  CONSTEXPR_DCHECK(ch != 0xDF && ch != 0xB5 && ch != 0xFF);
+  DCHECK(ch != 0xDF && ch != 0xB5 && ch != 0xFF);
   return ch &
          ~((IsAsciiLower(ch) || (((ch & 0xE0) == 0xE0) && ch != 0xF7)) << 5);
 }
 
 template <typename Char>
-bool ToUpperFastASCII(const Vector<const Char>& src,
+bool ToUpperFastASCII(const base::Vector<const Char>& src,
                       Handle<SeqOneByteString> result) {
   // Do a faster loop for the case where all the characters are ASCII.
   uint16_t ored = 0;
@@ -112,7 +112,7 @@ bool ToUpperFastASCII(const Vector<const Char>& src,
 const uint16_t sharp_s = 0xDF;
 
 template <typename Char>
-bool ToUpperOneByte(const Vector<const Char>& src, uint8_t* dest,
+bool ToUpperOneByte(const base::Vector<const Char>& src, uint8_t* dest,
                     int* sharp_s_count) {
   // Still pretty-fast path for the input with non-ASCII Latin-1 characters.
 
@@ -138,7 +138,7 @@ bool ToUpperOneByte(const Vector<const Char>& src, uint8_t* dest,
 }
 
 template <typename Char>
-void ToUpperWithSharpS(const Vector<const Char>& src,
+void ToUpperWithSharpS(const base::Vector<const Char>& src,
                        Handle<SeqOneByteString> result) {
   int32_t dest_index = 0;
   for (auto it = src.begin(); it != src.end(); ++it) {
@@ -369,7 +369,7 @@ MaybeHandle<String> Intl::ConvertToUpper(Isolate* isolate, Handle<String> s) {
       String::FlatContent flat = s->GetFlatContent(no_gc);
       uint8_t* dest = result->GetChars(no_gc);
       if (flat.IsOneByte()) {
-        Vector<const uint8_t> src = flat.ToOneByteVector();
+        base::Vector<const uint8_t> src = flat.ToOneByteVector();
         bool has_changed_character = false;
         int index_to_first_unprocessed = FastAsciiConvert<false>(
             reinterpret_cast<char*>(result->GetChars(no_gc)),
@@ -385,7 +385,7 @@ MaybeHandle<String> Intl::ConvertToUpper(Isolate* isolate, Handle<String> s) {
                            dest + index_to_first_unprocessed, &sharp_s_count);
       } else {
         DCHECK(flat.IsTwoByte());
-        Vector<const uint16_t> src = flat.ToUC16Vector();
+        base::Vector<const uint16_t> src = flat.ToUC16Vector();
         if (ToUpperFastASCII(src, result)) return result;
         is_result_single_byte = ToUpperOneByte(src, dest, &sharp_s_count);
       }
@@ -453,7 +453,7 @@ Maybe<icu::Locale> CreateICULocale(const std::string& bcp47_locale) {
 
 MaybeHandle<String> Intl::ToString(Isolate* isolate,
                                    const icu::UnicodeString& string) {
-  return isolate->factory()->NewStringFromTwoByte(Vector<const uint16_t>(
+  return isolate->factory()->NewStringFromTwoByte(base::Vector<const uint16_t>(
       reinterpret_cast<const uint16_t*>(string.getBuffer()), string.length()));
 }
 
@@ -479,7 +479,12 @@ Handle<JSObject> InnerAddElement(Isolate* isolate, Handle<JSArray> array,
                         field_type_string, NONE);
 
   JSObject::AddProperty(isolate, element, factory->value_string(), value, NONE);
-  JSObject::AddDataElement(array, index, element, NONE);
+  // TODO(victorgomes): Temporarily forcing a fatal error here in case of
+  // overflow, until Intl::AddElement can handle exceptions.
+  if (JSObject::AddDataElement(array, index, element, NONE).IsNothing()) {
+    FATAL("Fatal JavaScript invalid size error when adding element");
+    UNREACHABLE();
+  }
   return element;
 }
 
@@ -1486,7 +1491,6 @@ icu::LocaleMatcher BuildLocaleMatcher(
       builder.addSupportedLocale(l);
     }
   }
-
   return builder.build(*status);
 }
 
@@ -1533,23 +1537,12 @@ std::string BestFitMatcher(Isolate* isolate,
                            const std::set<std::string>& available_locales,
                            const std::vector<std::string>& requested_locales) {
   UErrorCode status = U_ZERO_ERROR;
-  icu::LocaleMatcher matcher =
-      BuildLocaleMatcher(isolate, available_locales, &status);
-  DCHECK(U_SUCCESS(status));
-
   Iterator iter(requested_locales.cbegin(), requested_locales.cend());
-  std::string bestfit =
-      matcher.getBestMatch(iter, status)->toLanguageTag<std::string>(status);
-  if (U_FAILURE(status)) {
-    return DefaultLocale(isolate);
-  }
-  // We need to return the extensions with it.
-  for (auto it = requested_locales.begin(); it != requested_locales.end();
-       ++it) {
-    if (it->find(bestfit) == 0) {
-      return *it;
-    }
-  }
+  std::string bestfit = BuildLocaleMatcher(isolate, available_locales, &status)
+                            .getBestMatchResult(iter, status)
+                            .makeResolvedLocale(status)
+                            .toLanguageTag<std::string>(status);
+  DCHECK(U_SUCCESS(status));
   return bestfit;
 }
 
@@ -1561,32 +1554,34 @@ std::vector<std::string> BestFitSupportedLocales(
   UErrorCode status = U_ZERO_ERROR;
   icu::LocaleMatcher matcher =
       BuildLocaleMatcher(isolate, available_locales, &status);
-  DCHECK(U_SUCCESS(status));
-
-  std::string default_locale = DefaultLocale(isolate);
   std::vector<std::string> result;
-  for (auto it = requested_locales.cbegin(); it != requested_locales.cend();
-       it++) {
-    if (*it == default_locale) {
-      result.push_back(*it);
-    } else {
+  if (U_SUCCESS(status)) {
+    for (auto it = requested_locales.cbegin(); it != requested_locales.cend();
+         it++) {
       status = U_ZERO_ERROR;
       icu::Locale desired = icu::Locale::forLanguageTag(it->c_str(), status);
-      std::string bestfit = matcher.getBestMatch(desired, status)
-                                ->toLanguageTag<std::string>(status);
-      // We need to return the extensions with it.
-      if (U_SUCCESS(status) && it->find(bestfit) == 0) {
-        result.push_back(*it);
-      }
+      icu::LocaleMatcher::Result matched =
+          matcher.getBestMatchResult(desired, status);
+      if (U_FAILURE(status)) continue;
+      if (matched.getSupportedIndex() < 0) continue;
+
+      // The BestFitSupportedLocales abstract operation returns the *SUBSET* of
+      // the provided BCP 47 language priority list requestedLocales for which
+      // availableLocales has a matching locale when using the Best Fit Matcher
+      // algorithm. Locales appear in the same order in the returned list as in
+      // requestedLocales. The steps taken are implementation dependent.
+      std::string bestfit = desired.toLanguageTag<std::string>(status);
+      if (U_FAILURE(status)) continue;
+      result.push_back(bestfit);
     }
   }
   return result;
 }
 
 // ecma262 #sec-createarrayfromlist
-Handle<JSArray> CreateArrayFromList(Isolate* isolate,
-                                    std::vector<std::string> elements,
-                                    PropertyAttributes attr) {
+MaybeHandle<JSArray> CreateArrayFromList(Isolate* isolate,
+                                         std::vector<std::string> elements,
+                                         PropertyAttributes attr) {
   Factory* factory = isolate->factory();
   // Let array be ! ArrayCreate(0).
   Handle<JSArray> array = factory->NewJSArray(0);
@@ -1598,11 +1593,13 @@ Handle<JSArray> CreateArrayFromList(Isolate* isolate,
     // a. Let status be CreateDataProperty(array, ! ToString(n), e).
     const std::string& part = elements[i];
     Handle<String> value =
-        factory->NewStringFromUtf8(CStrVector(part.c_str())).ToHandleChecked();
-    JSObject::AddDataElement(array, i, value, attr);
+        factory->NewStringFromUtf8(base::CStrVector(part.c_str()))
+            .ToHandleChecked();
+    MAYBE_RETURN(JSObject::AddDataElement(array, i, value, attr),
+                 MaybeHandle<JSArray>());
   }
   // 5. Return array.
-  return array;
+  return MaybeHandle<JSArray>(array);
 }
 
 // ECMA 402 9.2.9 SupportedLocales(availableLocales, requestedLocales, options)
@@ -2042,23 +2039,15 @@ icu::TimeZone* ICUTimezoneCache::GetTimeZone() {
 bool ICUTimezoneCache::GetOffsets(double time_ms, bool is_utc,
                                   int32_t* raw_offset, int32_t* dst_offset) {
   UErrorCode status = U_ZERO_ERROR;
-  // TODO(jshin): ICU TimeZone class handles skipped time differently from
-  // Ecma 262 (https://github.com/tc39/ecma262/pull/778) and icu::TimeZone
-  // class does not expose the necessary API. Fixing
-  // http://bugs.icu-project.org/trac/ticket/13268 would make it easy to
-  // implement the proposed spec change. A proposed fix for ICU is
-  //    https://chromium-review.googlesource.com/851265 .
-  // In the meantime, use an internal (still public) API of icu::BasicTimeZone.
-  // Once it's accepted by the upstream, get rid of cast. Note that casting
-  // TimeZone to BasicTimeZone is safe because we know that icu::TimeZone used
-  // here is a BasicTimeZone.
   if (is_utc) {
     GetTimeZone()->getOffset(time_ms, false, *raw_offset, *dst_offset, status);
   } else {
+    // Note that casting TimeZone to BasicTimeZone is safe because we know that
+    // icu::TimeZone used here is a BasicTimeZone.
     static_cast<const icu::BasicTimeZone*>(GetTimeZone())
-        ->getOffsetFromLocal(time_ms, icu::BasicTimeZone::kFormer,
-                             icu::BasicTimeZone::kFormer, *raw_offset,
-                             *dst_offset, status);
+        ->getOffsetFromLocal(time_ms, UCAL_TZ_LOCAL_FORMER,
+                             UCAL_TZ_LOCAL_FORMER, *raw_offset, *dst_offset,
+                             status);
   }
 
   return U_SUCCESS(status);

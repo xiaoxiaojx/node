@@ -287,7 +287,7 @@ class Simulator : public SimulatorBase {
   template <typename T>
   inline void Read(uintptr_t address, T* value) {
     base::MutexGuard lock_guard(&GlobalMonitor::Get()->mutex);
-    base::Memcpy(value, reinterpret_cast<const char*>(address), sizeof(T));
+    memcpy(value, reinterpret_cast<const char*>(address), sizeof(T));
   }
 
   template <typename T>
@@ -296,7 +296,7 @@ class Simulator : public SimulatorBase {
     GlobalMonitor::Get()->NotifyLoadExcl(
         address, static_cast<TransactionSize>(sizeof(T)),
         isolate_->thread_id());
-    base::Memcpy(value, reinterpret_cast<const char*>(address), sizeof(T));
+    memcpy(value, reinterpret_cast<const char*>(address), sizeof(T));
   }
 
   template <typename T>
@@ -305,7 +305,7 @@ class Simulator : public SimulatorBase {
     GlobalMonitor::Get()->NotifyStore(address,
                                       static_cast<TransactionSize>(sizeof(T)),
                                       isolate_->thread_id());
-    base::Memcpy(reinterpret_cast<char*>(address), &value, sizeof(T));
+    memcpy(reinterpret_cast<char*>(address), &value, sizeof(T));
   }
 
   template <typename T>
@@ -314,11 +314,23 @@ class Simulator : public SimulatorBase {
     if (GlobalMonitor::Get()->NotifyStoreExcl(
             address, static_cast<TransactionSize>(sizeof(T)),
             isolate_->thread_id())) {
-      base::Memcpy(reinterpret_cast<char*>(address), &value, sizeof(T));
+      memcpy(reinterpret_cast<char*>(address), &value, sizeof(T));
       return 0;
     } else {
       return 1;
     }
+  }
+
+  // Byte Reverse.
+  static inline __uint128_t __builtin_bswap128(__uint128_t v) {
+    union {
+      uint64_t u64[2];
+      __uint128_t u128;
+    } res, val;
+    val.u128 = v;
+    res.u64[0] = __builtin_bswap64(val.u64[1]);
+    res.u64[1] = __builtin_bswap64(val.u64[0]);
+    return res.u128;
   }
 
 #define RW_VAR_LIST(V)      \

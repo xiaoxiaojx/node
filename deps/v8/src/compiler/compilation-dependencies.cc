@@ -4,10 +4,13 @@
 
 #include "src/compiler/compilation-dependencies.h"
 
+#include "src/base/optional.h"
 #include "src/compiler/compilation-dependency.h"
 #include "src/execution/protectors.h"
 #include "src/handles/handles-inl.h"
 #include "src/objects/allocation-site-inl.h"
+#include "src/objects/internal-index.h"
+#include "src/objects/js-array-inl.h"
 #include "src/objects/js-function-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/zone/zone-handle-set.h"
@@ -36,7 +39,7 @@ class InitialMapDependency final : public CompilationDependency {
            function->initial_map() == *initial_map_.object();
   }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     DependentCode::InstallDependency(function_.isolate(), code,
                                      initial_map_.object(),
@@ -73,7 +76,7 @@ class PrototypePropertyDependency final : public CompilationDependency {
     if (!function->has_initial_map()) JSFunction::EnsureHasInitialMap(function);
   }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     Handle<JSFunction> function = function_.object();
     DCHECK(function->has_initial_map());
@@ -95,7 +98,7 @@ class StableMapDependency final : public CompilationDependency {
 
   bool IsValid() const override { return map_.object()->is_stable(); }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     DependentCode::InstallDependency(map_.isolate(), code, map_.object(),
                                      DependentCode::kPrototypeCheckGroup);
@@ -122,7 +125,7 @@ class ConstantInDictionaryPrototypeChainDependency final
   // starting at |receiver_map_|.
   bool IsValid() const override { return !GetHolderIfValid().is_null(); }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     Isolate* isolate = receiver_map_.isolate();
     Handle<JSObject> holder = GetHolderIfValid().ToHandleChecked();
@@ -227,6 +230,115 @@ class ConstantInDictionaryPrototypeChainDependency final
   PropertyKind kind_;
 };
 
+class OwnConstantDataPropertyDependency final : public CompilationDependency {
+ public:
+  OwnConstantDataPropertyDependency(JSHeapBroker* broker,
+                                    const JSObjectRef& holder,
+                                    const MapRef& map,
+                                    Representation representation,
+                                    FieldIndex index, const ObjectRef& value)
+      : broker_(broker),
+        holder_(holder),
+        map_(map),
+        representation_(representation),
+        index_(index),
+        value_(value) {}
+
+  bool IsValid() const override {
+    if (holder_.object()->map() != *map_.object()) {
+      TRACE_BROKER_MISSING(broker_,
+                           "Map change detected in " << holder_.object());
+      return false;
+    }
+    DisallowGarbageCollection no_heap_allocation;
+    Object current_value = holder_.object()->RawFastPropertyAt(index_);
+    Object used_value = *value_.object();
+    if (representation_.IsDouble()) {
+      // Compare doubles by bit pattern.
+      if (!current_value.IsHeapNumber() || !used_value.IsHeapNumber() ||
+          HeapNumber::cast(current_value).value_as_bits() !=
+              HeapNumber::cast(used_value).value_as_bits()) {
+        TRACE_BROKER_MISSING(broker_,
+                             "Constant Double property value changed in "
+                                 << holder_.object() << " at FieldIndex "
+                                 << index_.property_index());
+        return false;
+      }
+    } else if (current_value != used_value) {
+      TRACE_BROKER_MISSING(broker_, "Constant property value changed in "
+                                        << holder_.object() << " at FieldIndex "
+                                        << index_.property_index());
+      return false;
+    }
+    return true;
+  }
+
+  void Install(Handle<Code> code) const override {}
+
+ private:
+  JSHeapBroker* const broker_;
+  JSObjectRef const holder_;
+  MapRef const map_;
+  Representation const representation_;
+  FieldIndex const index_;
+  ObjectRef const value_;
+};
+
+class OwnConstantDictionaryPropertyDependency final
+    : public CompilationDependency {
+ public:
+  OwnConstantDictionaryPropertyDependency(JSHeapBroker* broker,
+                                          const JSObjectRef& holder,
+                                          InternalIndex index,
+                                          const ObjectRef& value)
+      : broker_(broker),
+        holder_(holder),
+        map_(holder.map()),
+        index_(index),
+        value_(value) {
+    // We depend on map() being cached.
+    STATIC_ASSERT(ref_traits<JSObject>::ref_serialization_kind !=
+                  RefSerializationKind::kNeverSerialized);
+  }
+
+  bool IsValid() const override {
+    if (holder_.object()->map() != *map_.object()) {
+      TRACE_BROKER_MISSING(broker_,
+                           "Map change detected in " << holder_.object());
+      return false;
+    }
+
+    base::Optional<Object> maybe_value = JSObject::DictionaryPropertyAt(
+        holder_.object(), index_, broker_->isolate()->heap());
+
+    if (!maybe_value) {
+      TRACE_BROKER_MISSING(
+          broker_, holder_.object()
+                       << "has a value that might not safe to read at index "
+                       << index_.as_int());
+      return false;
+    }
+
+    if (*maybe_value != *value_.object()) {
+      TRACE_BROKER_MISSING(broker_, "Constant property value changed in "
+                                        << holder_.object()
+                                        << " at InternalIndex "
+                                        << index_.as_int());
+      return false;
+    }
+    return true;
+  }
+
+  void Install(Handle<Code> code) const override {}
+
+ private:
+  JSHeapBroker* const broker_;
+  JSObjectRef const holder_;
+  MapRef const map_;
+  InternalIndex const index_;
+  ObjectRef const value_;
+};
+
 class TransitionDependency final : public CompilationDependency {
  public:
   explicit TransitionDependency(const MapRef& map) : map_(map) {
@@ -235,7 +347,7 @@ class TransitionDependency final : public CompilationDependency {
 
   bool IsValid() const override { return !map_.object()->is_deprecated(); }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     DependentCode::InstallDependency(map_.isolate(), code, map_.object(),
                                      DependentCode::kTransitionGroup);
@@ -259,7 +371,7 @@ class PretenureModeDependency final : public CompilationDependency {
     return allocation_ == site_.object()->GetAllocationType();
   }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     DependentCode::InstallDependency(
         site_.isolate(), code, site_.object(),
@@ -297,7 +409,7 @@ class FieldRepresentationDependency final : public CompilationDependency {
                                       .representation());
   }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     DependentCode::InstallDependency(owner_.isolate(), code, owner_.object(),
                                      DependentCode::kFieldRepresentationGroup);
@@ -335,7 +447,7 @@ class FieldTypeDependency final : public CompilationDependency {
                         .GetFieldType(descriptor_);
   }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     DependentCode::InstallDependency(owner_.isolate(), code, owner_.object(),
                                      DependentCode::kFieldTypeGroup);
@@ -365,7 +477,7 @@ class FieldConstnessDependency final : public CompilationDependency {
                .constness();
   }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     DependentCode::InstallDependency(owner_.isolate(), code, owner_.object(),
                                      DependentCode::kFieldConstGroup);
@@ -396,7 +508,7 @@ class GlobalPropertyDependency final : public CompilationDependency {
            read_only_ == cell->property_details().IsReadOnly();
   }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     DependentCode::InstallDependency(cell_.isolate(), code, cell_.object(),
                                      DependentCode::kPropertyCellChangedGroup);
@@ -419,7 +531,7 @@ class ProtectorDependency final : public CompilationDependency {
     return cell->value() == Smi::FromInt(Protectors::kProtectorValid);
   }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     DependentCode::InstallDependency(cell_.isolate(), code, cell_.object(),
                                      DependentCode::kPropertyCellChangedGroup);
@@ -437,19 +549,20 @@ class ElementsKindDependency final : public CompilationDependency {
       : site_(site), kind_(kind) {
     DCHECK(AllocationSite::ShouldTrack(kind_));
     DCHECK_EQ(kind_, site_.PointsToLiteral()
-                         ? site_.boilerplate().value().GetElementsKind()
+                         ? site_.boilerplate().value().map().elements_kind()
                          : site_.GetElementsKind());
   }
 
   bool IsValid() const override {
     Handle<AllocationSite> site = site_.object();
-    ElementsKind kind = site->PointsToLiteral()
-                            ? site->boilerplate().GetElementsKind()
-                            : site->GetElementsKind();
+    ElementsKind kind =
+        site->PointsToLiteral()
+            ? site->boilerplate(kAcquireLoad).map().elements_kind()
+            : site->GetElementsKind();
     return kind_ == kind;
   }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     DependentCode::InstallDependency(
         site_.isolate(), code, site_.object(),
@@ -459,6 +572,35 @@ class ElementsKindDependency final : public CompilationDependency {
  private:
   AllocationSiteRef site_;
   ElementsKind kind_;
+};
+
+// Only valid if the holder can use direct reads, since validation uses
+// GetOwnConstantElementFromHeap.
+class OwnConstantElementDependency final : public CompilationDependency {
+ public:
+  OwnConstantElementDependency(const JSObjectRef& holder, uint32_t index,
+                               const ObjectRef& element)
+      : holder_(holder), index_(index), element_(element) {}
+
+  bool IsValid() const override {
+    DisallowGarbageCollection no_gc;
+    JSObject holder = *holder_.object();
+    base::Optional<Object> maybe_element =
+        holder_.GetOwnConstantElementFromHeap(holder.elements(),
+                                              holder.GetElementsKind(), index_);
+    if (!maybe_element.has_value()) return false;
+
+    return maybe_element.value() == *element_.object();
+  }
+
+  void Install(Handle<Code> code) const override {
+    // This dependency has no effect after code finalization.
+  }
+
+ private:
+  const JSObjectRef holder_;
+  const uint32_t index_;
+  const ObjectRef element_;
 };
 
 class InitialMapInstanceSizePredictionDependency final
@@ -482,7 +624,7 @@ class InitialMapInstanceSizePredictionDependency final
     function_.object()->CompleteInobjectSlackTrackingIfActive();
   }
 
-  void Install(const MaybeObjectHandle& code) const override {
+  void Install(Handle<Code> code) const override {
     SLOW_DCHECK(IsValid());
     DCHECK(
         !function_.object()->initial_map().IsInobjectSlackTrackingInProgress());
@@ -580,38 +722,38 @@ bool CompilationDependencies::DependOnProtector(const PropertyCellRef& cell) {
 }
 
 bool CompilationDependencies::DependOnArrayBufferDetachingProtector() {
-  return DependOnProtector(PropertyCellRef(
+  return DependOnProtector(MakeRef(
       broker_,
       broker_->isolate()->factory()->array_buffer_detaching_protector()));
 }
 
 bool CompilationDependencies::DependOnArrayIteratorProtector() {
-  return DependOnProtector(PropertyCellRef(
+  return DependOnProtector(MakeRef(
       broker_, broker_->isolate()->factory()->array_iterator_protector()));
 }
 
 bool CompilationDependencies::DependOnArraySpeciesProtector() {
-  return DependOnProtector(PropertyCellRef(
+  return DependOnProtector(MakeRef(
       broker_, broker_->isolate()->factory()->array_species_protector()));
 }
 
 bool CompilationDependencies::DependOnNoElementsProtector() {
-  return DependOnProtector(PropertyCellRef(
-      broker_, broker_->isolate()->factory()->no_elements_protector()));
+  return DependOnProtector(
+      MakeRef(broker_, broker_->isolate()->factory()->no_elements_protector()));
 }
 
 bool CompilationDependencies::DependOnPromiseHookProtector() {
-  return DependOnProtector(PropertyCellRef(
+  return DependOnProtector(MakeRef(
       broker_, broker_->isolate()->factory()->promise_hook_protector()));
 }
 
 bool CompilationDependencies::DependOnPromiseSpeciesProtector() {
-  return DependOnProtector(PropertyCellRef(
+  return DependOnProtector(MakeRef(
       broker_, broker_->isolate()->factory()->promise_species_protector()));
 }
 
 bool CompilationDependencies::DependOnPromiseThenProtector() {
-  return DependOnProtector(PropertyCellRef(
+  return DependOnProtector(MakeRef(
       broker_, broker_->isolate()->factory()->promise_then_protector()));
 }
 
@@ -620,11 +762,33 @@ void CompilationDependencies::DependOnElementsKind(
   DCHECK(!site.IsNeverSerializedHeapObject());
   // Do nothing if the object doesn't have any useful element transitions left.
   ElementsKind kind = site.PointsToLiteral()
-                          ? site.boilerplate().value().GetElementsKind()
+                          ? site.boilerplate().value().map().elements_kind()
                           : site.GetElementsKind();
   if (AllocationSite::ShouldTrack(kind)) {
     RecordDependency(zone_->New<ElementsKindDependency>(site, kind));
   }
+}
+
+void CompilationDependencies::DependOnOwnConstantElement(
+    const JSObjectRef& holder, uint32_t index, const ObjectRef& element) {
+  // Only valid if the holder can use direct reads, since validation uses
+  // GetOwnConstantElementFromHeap.
+  DCHECK(holder.should_access_heap() || broker_->is_concurrent_inlining());
+  RecordDependency(
+      zone_->New<OwnConstantElementDependency>(holder, index, element));
+}
+
+void CompilationDependencies::DependOnOwnConstantDataProperty(
+    const JSObjectRef& holder, const MapRef& map, Representation representation,
+    FieldIndex index, const ObjectRef& value) {
+  RecordDependency(zone_->New<OwnConstantDataPropertyDependency>(
+      broker_, holder, map, representation, index, value));
+}
+
+void CompilationDependencies::DependOnOwnConstantDictionaryProperty(
+    const JSObjectRef& holder, InternalIndex index, const ObjectRef& value) {
+  RecordDependency(zone_->New<OwnConstantDictionaryPropertyDependency>(
+      broker_, holder, index, value));
 }
 
 bool CompilationDependencies::Commit(Handle<Code> code) {
@@ -653,7 +817,7 @@ bool CompilationDependencies::Commit(Handle<Code> code) {
       dependencies_.clear();
       return false;
     }
-    dep->Install(MaybeObjectHandle::Weak(code));
+    dep->Install(code);
   }
 
   // It is even possible that a GC during the above installations invalidated
@@ -680,7 +844,7 @@ namespace {
 void DependOnStablePrototypeChain(CompilationDependencies* deps, MapRef map,
                                   base::Optional<JSObjectRef> last_prototype) {
   while (true) {
-    HeapObjectRef proto = map.prototype();
+    HeapObjectRef proto = map.prototype().value();
     if (!proto.IsJSObject()) {
       CHECK_EQ(proto.map().oddball_type(), OddballType::kNull);
       break;
@@ -697,7 +861,7 @@ void CompilationDependencies::DependOnStablePrototypeChains(
     MapContainer const& receiver_maps, WhereToStart start,
     base::Optional<JSObjectRef> last_prototype) {
   for (auto map : receiver_maps) {
-    MapRef receiver_map(broker_, map);
+    MapRef receiver_map = MakeRef(broker_, map);
     if (start == kStartAtReceiver) DependOnStableMap(receiver_map);
     if (receiver_map.IsPrimitiveMap()) {
       // Perform the implicit ToObject for primitives here.

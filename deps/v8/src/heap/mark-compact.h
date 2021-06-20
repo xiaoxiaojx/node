@@ -506,11 +506,14 @@ class MarkCompactCollector final : public MarkCompactCollectorBase {
   void RecordLiveSlotsOnPage(Page* page);
 
   bool is_compacting() const { return compacting_; }
+  bool is_shared_heap() const { return is_shared_heap_; }
 
   // Ensures that sweeping is finished.
   //
   // Note: Can only be called safely from main thread.
   V8_EXPORT_PRIVATE void EnsureSweepingCompleted();
+
+  void EnsurePageIsSwept(Page* page);
 
   void DrainSweepingWorklists();
   void DrainSweepingWorklistForSpace(AllocationSpace space);
@@ -605,11 +608,11 @@ class MarkCompactCollector final : public MarkCompactCollectorBase {
 
   void MarkLiveObjects() override;
 
-  // Marks the object black and adds it to the marking work list.
+  // Marks the object grey and adds it to the marking work list.
   // This is for non-incremental marking only.
   V8_INLINE void MarkObject(HeapObject host, HeapObject obj);
 
-  // Marks the object black and adds it to the marking work list.
+  // Marks the object grey and adds it to the marking work list.
   // This is for non-incremental marking only.
   V8_INLINE void MarkRootObject(Root root, HeapObject obj);
 
@@ -742,6 +745,8 @@ class MarkCompactCollector final : public MarkCompactCollectorBase {
   // The current stage of the collector.
   CollectorState state_;
 #endif
+
+  const bool is_shared_heap_;
 
   bool was_marked_incrementally_;
 

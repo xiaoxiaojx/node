@@ -55,7 +55,7 @@ void InterpretAndExecuteModule(i::Isolate* isolate,
     return;
   }
 
-  OwnedVector<WasmValue> arguments =
+  base::OwnedVector<WasmValue> arguments =
       testing::MakeDefaultInterpreterArguments(isolate, main_function->sig());
 
   // Now interpret.
@@ -83,7 +83,7 @@ void InterpretAndExecuteModule(i::Isolate* isolate,
               .ToHandle(&instance));
   }
 
-  OwnedVector<Handle<Object>> compiled_args =
+  base::OwnedVector<Handle<Object>> compiled_args =
       testing::MakeDefaultArguments(isolate, main_function->sig());
 
   bool exception = false;
@@ -158,6 +158,42 @@ struct PrintName {
 std::ostream& operator<<(std::ostream& os, const PrintName& name) {
   return os.write(name.name.begin(), name.name.size());
 }
+
+std::ostream& operator<<(std::ostream& os, const WasmInitExpr& expr) {
+  os << "WasmInitExpr.";
+  switch (expr.kind()) {
+    case WasmInitExpr::kNone:
+      UNREACHABLE();
+    case WasmInitExpr::kS128Const:
+    case WasmInitExpr::kRttCanon:
+    case WasmInitExpr::kRttSub:
+    case WasmInitExpr::kRttFreshSub:
+    case WasmInitExpr::kRefNullConst:
+    case WasmInitExpr::kStructNewWithRtt:
+    case WasmInitExpr::kArrayInit:
+      // TODO(manoskouk): Implement these.
+      UNIMPLEMENTED();
+    case WasmInitExpr::kGlobalGet:
+      os << "GlobalGet(" << expr.immediate().index;
+      break;
+    case WasmInitExpr::kI32Const:
+      os << "I32Const(" << expr.immediate().i32_const;
+      break;
+    case WasmInitExpr::kI64Const:
+      os << "I64Const(" << expr.immediate().i64_const;
+      break;
+    case WasmInitExpr::kF32Const:
+      os << "F32Const(" << expr.immediate().f32_const;
+      break;
+    case WasmInitExpr::kF64Const:
+      os << "F64Const(" << expr.immediate().f64_const;
+      break;
+    case WasmInitExpr::kRefFuncConst:
+      os << "RefFunc(" << expr.immediate().index;
+      break;
+  }
+  return os << ")";
+}
 }  // namespace
 
 void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
@@ -213,7 +249,7 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
 
   for (WasmGlobal& glob : module->globals) {
     os << "builder.addGlobal(" << ValueTypeToConstantName(glob.type) << ", "
-       << glob.mutability << ");\n";
+       << glob.mutability << ", " << glob.init << ");\n";
   }
 
   // TODO(7748): Support array/struct types.
@@ -231,6 +267,8 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
   Zone tmp_zone(isolate->allocator(), ZONE_NAME);
 
   // There currently cannot be more than one table.
+  // TODO(manoskouk): Add support for more tables.
+  // TODO(9495): Add support for talbes with explicit initializers.
   DCHECK_GE(1, module->tables.size());
   for (const WasmTable& table : module->tables) {
     os << "builder.setTableBounds(" << table.initial_size << ", ";
@@ -241,23 +279,26 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
     }
   }
   for (const WasmElemSegment& elem_segment : module->elem_segments) {
-    os << "builder.addElementSegment(";
-    os << elem_segment.table_index << ", ";
-    switch (elem_segment.offset.kind()) {
-      case WasmInitExpr::kGlobalGet:
-        os << elem_segment.offset.immediate().index << ", true";
-        break;
-      case WasmInitExpr::kI32Const:
-        os << elem_segment.offset.immediate().i32_const << ", false";
-        break;
-      default:
-        UNREACHABLE();
+    const char* status_str =
+        elem_segment.status == WasmElemSegment::kStatusActive
+            ? "Active"
+            : elem_segment.status == WasmElemSegment::kStatusPassive
+                  ? "Passive"
+                  : "Declarative";
+    os << "builder.add" << status_str << "ElementSegment(";
+    if (elem_segment.status == WasmElemSegment::kStatusActive) {
+      os << elem_segment.table_index << ", " << elem_segment.offset << ", ";
     }
-    os << ", " << PrintCollection(elem_segment.entries) << ");\n";
+    os << "[";
+    for (uint32_t i = 0; i < elem_segment.entries.size(); i++) {
+      os << elem_segment.entries[i];
+      if (i < elem_segment.entries.size() - 1) os << ", ";
+    }
+    os << "], " << ValueTypeToConstantName(elem_segment.type) << ");\n";
   }
 
   for (const WasmFunction& func : module->functions) {
-    Vector<const uint8_t> func_code = wire_bytes.GetFunctionBytes(&func);
+    base::Vector<const uint8_t> func_code = wire_bytes.GetFunctionBytes(&func);
     os << "// Generate function " << (func.func_index + 1) << " (out of "
        << module->functions.size() << ").\n";
 
@@ -321,7 +362,7 @@ void OneTimeEnableStagedWasmFeatures(v8::Isolate* isolate) {
   static EnableStagedWasmFeatures one_time_enable_staged_features(isolate);
 }
 
-void WasmExecutionFuzzer::FuzzWasmModule(Vector<const uint8_t> data,
+void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
                                          bool require_valid) {
   v8_fuzzer::FuzzerSupport* support = v8_fuzzer::FuzzerSupport::Get();
   v8::Isolate* isolate = support->GetIsolate();

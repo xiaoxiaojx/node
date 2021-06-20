@@ -224,6 +224,7 @@ void InstructionSelector::VisitLoad(Node* node) {
       // Vectors do not support MRI mode, only MRR is available.
       mode = kNoImmediate;
       break;
+    case MachineRepresentation::kMapWord:  // Fall through.
     case MachineRepresentation::kNone:
       UNREACHABLE();
   }
@@ -315,6 +316,7 @@ void InstructionSelector::VisitStore(Node* node) {
   } else {
     ArchOpcode opcode;
     ImmediateMode mode = kInt16Imm;
+    NodeMatcher m(value);
     switch (rep) {
       case MachineRepresentation::kFloat32:
         opcode = kPPC_StoreFloat32;
@@ -331,6 +333,11 @@ void InstructionSelector::VisitStore(Node* node) {
         break;
       case MachineRepresentation::kWord32:
         opcode = kPPC_StoreWord32;
+        if (m.IsWord32ReverseBytes()) {
+          opcode = kPPC_StoreByteRev32;
+          value = value->InputAt(0);
+          mode = kNoImmediate;
+        }
         break;
       case MachineRepresentation::kCompressedPointer:  // Fall through.
       case MachineRepresentation::kCompressed:
@@ -350,12 +357,18 @@ void InstructionSelector::VisitStore(Node* node) {
       case MachineRepresentation::kWord64:
         opcode = kPPC_StoreWord64;
         mode = kInt16Imm_4ByteAligned;
+        if (m.IsWord64ReverseBytes()) {
+          opcode = kPPC_StoreByteRev64;
+          value = value->InputAt(0);
+          mode = kNoImmediate;
+        }
         break;
       case MachineRepresentation::kSimd128:
         opcode = kPPC_StoreSimd128;
         // Vectors do not support MRI mode, only MRR is available.
         mode = kNoImmediate;
         break;
+      case MachineRepresentation::kMapWord:  // Fall through.
       case MachineRepresentation::kNone:
         UNREACHABLE();
     }
@@ -973,12 +986,40 @@ void InstructionSelector::VisitWord64ReverseBits(Node* node) { UNREACHABLE(); }
 void InstructionSelector::VisitWord64ReverseBytes(Node* node) {
   PPCOperandGenerator g(this);
   InstructionOperand temp[] = {g.TempRegister()};
+  NodeMatcher input(node->InputAt(0));
+  if (CanCover(node, input.node()) && input.IsLoad()) {
+    LoadRepresentation load_rep = LoadRepresentationOf(input.node()->op());
+    if (load_rep.representation() == MachineRepresentation::kWord64) {
+      Node* base = input.node()->InputAt(0);
+      Node* offset = input.node()->InputAt(1);
+      bool is_atomic = (node->opcode() == IrOpcode::kWord32AtomicLoad ||
+                        node->opcode() == IrOpcode::kWord64AtomicLoad);
+      Emit(kPPC_LoadByteRev64 | AddressingModeField::encode(kMode_MRR),
+           g.DefineAsRegister(node), g.UseRegister(base), g.UseRegister(offset),
+           g.UseImmediate(is_atomic));
+      return;
+    }
+  }
   Emit(kPPC_ByteRev64, g.DefineAsRegister(node),
        g.UseUniqueRegister(node->InputAt(0)), 1, temp);
 }
 
 void InstructionSelector::VisitWord32ReverseBytes(Node* node) {
   PPCOperandGenerator g(this);
+  NodeMatcher input(node->InputAt(0));
+  if (CanCover(node, input.node()) && input.IsLoad()) {
+    LoadRepresentation load_rep = LoadRepresentationOf(input.node()->op());
+    if (load_rep.representation() == MachineRepresentation::kWord32) {
+      Node* base = input.node()->InputAt(0);
+      Node* offset = input.node()->InputAt(1);
+      bool is_atomic = (node->opcode() == IrOpcode::kWord32AtomicLoad ||
+                        node->opcode() == IrOpcode::kWord64AtomicLoad);
+      Emit(kPPC_LoadByteRev32 | AddressingModeField::encode(kMode_MRR),
+           g.DefineAsRegister(node), g.UseRegister(base), g.UseRegister(offset),
+           g.UseImmediate(is_atomic));
+      return;
+    }
+  }
   Emit(kPPC_ByteRev32, g.DefineAsRegister(node),
        g.UseRegister(node->InputAt(0)));
 }
@@ -2490,10 +2531,22 @@ void InstructionSelector::VisitS128Select(Node* node) {
        g.UseRegister(node->InputAt(2)));
 }
 
+// This is a replica of SimdShuffle::Pack4Lanes. However, above function will
+// not be available on builds with webassembly disabled, hence we need to have
+// it declared locally as it is used on other visitors such as S128Const.
+static int32_t Pack4Lanes(const uint8_t* shuffle) {
+  int32_t result = 0;
+  for (int i = 3; i >= 0; --i) {
+    result <<= 8;
+    result |= shuffle[i];
+  }
+  return result;
+}
+
 void InstructionSelector::VisitS128Const(Node* node) {
   PPCOperandGenerator g(this);
   uint32_t val[kSimd128Size / sizeof(uint32_t)];
-  base::Memcpy(val, S128ImmediateParameterOf(node->op()).data(), kSimd128Size);
+  memcpy(val, S128ImmediateParameterOf(node->op()).data(), kSimd128Size);
   // If all bytes are zeros, avoid emitting code for generic constants.
   bool all_zeros = !(val[0] || val[1] || val[2] || val[3]);
   bool all_ones = val[0] == UINT32_MAX && val[1] == UINT32_MAX &&
@@ -2507,14 +2560,10 @@ void InstructionSelector::VisitS128Const(Node* node) {
     // We have to use Pack4Lanes to reverse the bytes (lanes) on BE,
     // Which in this case is ineffective on LE.
     Emit(kPPC_S128Const, g.DefineAsRegister(node),
-         g.UseImmediate(
-             wasm::SimdShuffle::Pack4Lanes(reinterpret_cast<uint8_t*>(val))),
-         g.UseImmediate(wasm::SimdShuffle::Pack4Lanes(
-             reinterpret_cast<uint8_t*>(val) + 4)),
-         g.UseImmediate(wasm::SimdShuffle::Pack4Lanes(
-             reinterpret_cast<uint8_t*>(val) + 8)),
-         g.UseImmediate(wasm::SimdShuffle::Pack4Lanes(
-             reinterpret_cast<uint8_t*>(val) + 12)));
+         g.UseImmediate(Pack4Lanes(bit_cast<uint8_t*>(&val[0]))),
+         g.UseImmediate(Pack4Lanes(bit_cast<uint8_t*>(&val[0]) + 4)),
+         g.UseImmediate(Pack4Lanes(bit_cast<uint8_t*>(&val[0]) + 8)),
+         g.UseImmediate(Pack4Lanes(bit_cast<uint8_t*>(&val[0]) + 12)));
   }
 }
 
@@ -2640,6 +2689,12 @@ void InstructionSelector::VisitStoreLane(Node* node) {
   inputs[2] = g.UseRegister(node->InputAt(1));
   inputs[3] = g.UseImmediate(params.laneidx);
   Emit(opcode | AddressingModeField::encode(kMode_MRR), 0, nullptr, 4, inputs);
+}
+
+void InstructionSelector::AddOutputToSelectContinuation(OperandGenerator* g,
+                                                        int first_input_index,
+                                                        Node* node) {
+  UNREACHABLE();
 }
 
 // static

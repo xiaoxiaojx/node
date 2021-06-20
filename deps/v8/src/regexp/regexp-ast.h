@@ -91,7 +91,7 @@ class CharacterRange {
   V8_EXPORT_PRIVATE static void AddClassEscape(
       char type, ZoneList<CharacterRange>* ranges,
       bool add_unicode_case_equivalents, Zone* zone);
-  static Vector<const int> GetWordBounds();
+  static base::Vector<const int> GetWordBounds();
   static inline CharacterRange Singleton(uc32 value) {
     return CharacterRange(value, value);
   }
@@ -214,8 +214,7 @@ class RegExpTree : public ZoneObject {
   // expression.
   virtual Interval CaptureRegisters() { return Interval::Empty(); }
   virtual void AppendToText(RegExpText* text, Zone* zone);
-  V8_EXPORT_PRIVATE std::ostream& Print(std::ostream& os,
-                                        Zone* zone);  // NOLINT
+  V8_EXPORT_PRIVATE std::ostream& Print(std::ostream& os, Zone* zone);
 #define MAKE_ASTYPE(Name)           \
   virtual RegExp##Name* As##Name(); \
   virtual bool Is##Name();
@@ -370,7 +369,7 @@ class RegExpCharacterClass final : public RegExpTree {
 
 class RegExpAtom final : public RegExpTree {
  public:
-  explicit RegExpAtom(Vector<const uc16> data, JSRegExp::Flags flags)
+  explicit RegExpAtom(base::Vector<const uc16> data, JSRegExp::Flags flags)
       : data_(data), flags_(flags) {}
   void* Accept(RegExpVisitor* visitor, void* data) override;
   RegExpNode* ToNode(RegExpCompiler* compiler, RegExpNode* on_success) override;
@@ -380,13 +379,13 @@ class RegExpAtom final : public RegExpTree {
   int min_match() override { return data_.length(); }
   int max_match() override { return data_.length(); }
   void AppendToText(RegExpText* text, Zone* zone) override;
-  Vector<const uc16> data() { return data_; }
+  base::Vector<const uc16> data() { return data_; }
   int length() { return data_.length(); }
   JSRegExp::Flags flags() const { return flags_; }
   bool ignore_case() const { return (flags_ & JSRegExp::kIgnoreCase) != 0; }
 
  private:
-  Vector<const uc16> data_;
+  base::Vector<const uc16> data_;
   const JSRegExp::Flags flags_;
 };
 

@@ -305,14 +305,13 @@ int NativeRegExpMacroAssembler::Execute(
   Address stack_base = stack_scope.stack()->stack_base();
 
   bool is_one_byte = String::IsOneByteRepresentationUnderneath(input);
-  Code code = Code::cast(regexp.Code(is_one_byte));
+  Code code = FromCodeT(CodeT::cast(regexp.Code(is_one_byte)));
   RegExp::CallOrigin call_origin = RegExp::CallOrigin::kFromRuntime;
 
   using RegexpMatcherSig = int(
-      Address input_string, int start_offset,  // NOLINT(readability/casting)
-      const byte* input_start, const byte* input_end, int* output,
-      int output_size, Address stack_base, int call_origin, Isolate* isolate,
-      Address regexp);
+      Address input_string, int start_offset, const byte* input_start,
+      const byte* input_end, int* output, int output_size, Address stack_base,
+      int call_origin, Isolate* isolate, Address regexp);
 
   auto fn = GeneratedCode<RegexpMatcherSig>::FromCode(code);
   int result =

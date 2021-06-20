@@ -35,6 +35,11 @@ macro IsCode(o: HeapObject): bool {
 }
 
 @export
+macro IsCodeDataContainer(o: HeapObject): bool {
+  return Is<CodeDataContainer>(o);
+}
+
+@export
 macro IsContext(o: HeapObject): bool {
   return Is<Context>(o);
 }
@@ -321,6 +326,24 @@ Cast<Number|TheHole>(o: Object): Number|TheHole labels CastError {
       return o;
     }
     case (o: TheHole): {
+      return o;
+    }
+    case (Object): {
+      goto CastError;
+    }
+  }
+}
+
+Cast<Context|Zero|Undefined>(o: Object): Context|Zero|Undefined
+    labels CastError {
+  typeswitch (o) {
+    case (o: Context): {
+      return o;
+    }
+    case (o: Zero): {
+      return o;
+    }
+    case (o: Undefined): {
       return o;
     }
     case (Object): {

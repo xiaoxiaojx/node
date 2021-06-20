@@ -356,8 +356,7 @@ void RegExpMacroAssemblerX64::CheckNotBackReferenceIgnoreCase(
     // Isolate.
     __ LoadAddress(arg_reg_4, ExternalReference::isolate_address(isolate()));
 
-    { // NOLINT: Can't find a way to open this scope without confusing the
-      // linter.
+    {
       AllowExternalCallThatCantCauseGC scope(&masm_);
       ExternalReference compare =
           unicode ? ExternalReference::re_case_insensitive_compare_unicode(
@@ -477,7 +476,7 @@ void RegExpMacroAssemblerX64::CheckCharacterAfterAnd(uint32_t c,
   if (c == 0) {
     __ testl(current_character(), Immediate(mask));
   } else {
-    __ movl(rax, Immediate(mask));
+    __ Move(rax, mask);
     __ andq(rax, current_character());
     __ cmpl(rax, Immediate(c));
   }
@@ -491,7 +490,7 @@ void RegExpMacroAssemblerX64::CheckNotCharacterAfterAnd(uint32_t c,
   if (c == 0) {
     __ testl(current_character(), Immediate(mask));
   } else {
-    __ movl(rax, Immediate(mask));
+    __ Move(rax, mask);
     __ andq(rax, current_character());
     __ cmpl(rax, Immediate(c));
   }
@@ -672,7 +671,7 @@ bool RegExpMacroAssemblerX64::CheckSpecialCharacterClass(uc16 type,
 void RegExpMacroAssemblerX64::Fail() {
   STATIC_ASSERT(FAILURE == 0);  // Return value for failure is zero.
   if (!global()) {
-    __ Set(rax, FAILURE);
+    __ Move(rax, FAILURE);
   }
   __ jmp(&exit_label_);
 }
@@ -750,7 +749,7 @@ Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
   __ j(above_equal, &stack_ok);
   // Exit with OutOfMemory exception. There is not enough space on the stack
   // for our working registers.
-  __ Set(rax, EXCEPTION);
+  __ Move(rax, EXCEPTION);
   __ jmp(&return_rax);
 
   __ bind(&stack_limit_hit);
@@ -790,7 +789,7 @@ Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
   // Load newline if index is at start, previous character otherwise.
   __ cmpl(Operand(rbp, kStartIndex), Immediate(0));
   __ j(not_equal, &load_char_start_regexp, Label::kNear);
-  __ Set(current_character(), '\n');
+  __ Move(current_character(), '\n');
   __ jmp(&start_regexp, Label::kNear);
 
   // Global regexp restarts matching here.
@@ -805,7 +804,7 @@ Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
     // Fill in stack push order, to avoid accessing across an unwritten
     // page (a problem on Windows).
     if (num_saved_registers_ > 8) {
-      __ Set(rcx, kRegisterZero);
+      __ Move(rcx, kRegisterZero);
       Label init_loop;
       __ bind(&init_loop);
       __ movq(Operand(rbp, rcx, times_1, 0), rax);
@@ -896,7 +895,7 @@ Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
 
       __ jmp(&load_char_start_regexp);
     } else {
-      __ movq(rax, Immediate(SUCCESS));
+      __ Move(rax, SUCCESS);
     }
   }
 
@@ -1002,13 +1001,13 @@ Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
     // If any of the code above needed to exit with an exception.
     __ bind(&exit_with_exception);
     // Exit with Result EXCEPTION(-1) to signal thrown exception.
-    __ Set(rax, EXCEPTION);
+    __ Move(rax, EXCEPTION);
     __ jmp(&return_rax);
   }
 
   if (fallback_label_.is_linked()) {
     __ bind(&fallback_label_);
-    __ Set(rax, FALLBACK_TO_EXPERIMENTAL);
+    __ Move(rax, FALLBACK_TO_EXPERIMENTAL);
     __ jmp(&return_rax);
   }
 
@@ -1109,7 +1108,7 @@ void RegExpMacroAssemblerX64::SetCurrentPositionFromEnd(int by) {
   Label after_position;
   __ cmpq(rdi, Immediate(-by * char_size()));
   __ j(greater_equal, &after_position, Label::kNear);
-  __ movq(rdi, Immediate(-by * char_size()));
+  __ Move(rdi, -by * char_size());
   // On RegExp code entry (where this operation is used), the character before
   // the current position is expected to be already loaded.
   // We have advanced the position, so it's safe to read backwards.

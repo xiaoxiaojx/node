@@ -1,15 +1,12 @@
 // Copyright 2020 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-import {IcLogEntry} from '../log/ic.mjs';
-import {MapLogEntry} from '../log/map.mjs';
-
-import {FocusEvent, SelectionEvent, ToolTipEvent} from './events.mjs';
-import {delay, DOM, formatBytes, formatMicroSeconds, V8CustomElement} from './helper.mjs';
+import {SelectRelatedEvent} from './events.mjs';
+import {CollapsableElement, DOM, formatBytes, formatMicroSeconds} from './helper.mjs';
 
 DOM.defineCustomElement('view/code-panel',
                         (templateText) =>
-                            class CodePanel extends V8CustomElement {
+                            class CodePanel extends CollapsableElement {
   _timeline;
   _selectedEntries;
   _entry;
@@ -24,19 +21,32 @@ DOM.defineCustomElement('view/code-panel',
   set timeline(timeline) {
     this._timeline = timeline;
     this.$('.panel').style.display = timeline.isEmpty() ? 'none' : 'inherit';
-    this.update();
+    this.requestUpdate();
   }
 
   set selectedEntries(entries) {
     this._selectedEntries = entries;
-    // TODO: add code selection dropdown
-    this._updateSelect();
     this.entry = entries.first();
   }
 
   set entry(entry) {
     this._entry = entry;
-    this.update();
+    if (entry !== undefined) {
+      this.$('#properties').propertyDict = {
+        '__this__': entry,
+        functionName: entry.functionName,
+        size: formatBytes(entry.size),
+        creationTime: formatMicroSeconds(entry.time / 1000),
+        sourcePosition: entry.sourcePosition,
+        script: entry.script,
+        type: entry.type,
+        kind: entry.kindName,
+        variants: entry.variants,
+      };
+    } else {
+      this.$('#properties').propertyDict = {};
+    }
+    this.requestUpdate();
   }
 
   get _disassemblyNode() {
@@ -52,19 +62,22 @@ DOM.defineCustomElement('view/code-panel',
   }
 
   _update() {
-    this._disassemblyNode.innerText = this._entry?.disassemble ?? '';
+    this._updateSelect();
+    this._disassemblyNode.innerText = this._entry?.code ?? '';
     this._sourceNode.innerText = this._entry?.source ?? '';
   }
 
   _updateSelect() {
     const select = this._codeSelectNode;
+    if (select.data === this._selectedEntries) return;
+    select.data = this._selectedEntries;
     select.options.length = 0;
     const sorted =
         this._selectedEntries.slice().sort((a, b) => a.time - b.time);
     for (const code of this._selectedEntries) {
       const option = DOM.element('option');
       option.text =
-          `${code.name}(...) t=${formatMicroSeconds(code.time)} size=${
+          `${code.functionName}(...) t=${formatMicroSeconds(code.time)} size=${
               formatBytes(code.size)} script=${code.script?.toString()}`;
       option.data = code;
       select.add(option);

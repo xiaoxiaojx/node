@@ -22,7 +22,7 @@ class LiftoffCompileEnvironment {
         handle_scope_(isolate_),
         zone_(isolate_->allocator(), ZONE_NAME),
         wasm_runner_(nullptr, TestExecutionTier::kLiftoff, 0,
-                     kRuntimeExceptionSupport, kNoLowerSimd) {
+                     kRuntimeExceptionSupport) {
     // Add a table of length 1, for indirect calls.
     wasm_runner_.builder().AddIndirectFunctionTable(nullptr, 1);
     // Set tiered down such that we generate debugging code.
@@ -56,9 +56,9 @@ class LiftoffCompileEnvironment {
 
     // Check that the generated code matches.
     auto code1 =
-        VectorOf(result1.code_desc.buffer, result1.code_desc.instr_size);
+        base::VectorOf(result1.code_desc.buffer, result1.code_desc.instr_size);
     auto code2 =
-        VectorOf(result2.code_desc.buffer, result2.code_desc.instr_size);
+        base::VectorOf(result2.code_desc.buffer, result2.code_desc.instr_size);
     CHECK_EQ(code1, code2);
     CHECK_EQ(detected1, detected2);
   }
@@ -75,7 +75,7 @@ class LiftoffCompileEnvironment {
     std::unique_ptr<DebugSideTable> debug_side_table_via_compilation;
     auto result = ExecuteLiftoffCompilation(
         CcTest::i_isolate()->allocator(), &env, test_func.body, 0,
-        kForDebugging, nullptr, &detected, VectorOf(breakpoints),
+        kForDebugging, nullptr, &detected, base::VectorOf(breakpoints),
         &debug_side_table_via_compilation);
     CHECK(result.succeeded());
 
@@ -138,7 +138,7 @@ class LiftoffCompileEnvironment {
     // declaration and the trailing "end" opcode).
     NativeModule* native_module = code->native_module();
     auto* function = &native_module->module()->functions[code->index()];
-    Vector<const uint8_t> function_wire_bytes =
+    base::Vector<const uint8_t> function_wire_bytes =
         native_module->wire_bytes().SubVector(function->code.offset(),
                                               function->code.end_offset());
 
@@ -449,6 +449,29 @@ TEST(Liftoff_debug_side_table_catch_all) {
            {Stack(0, kWasmI32), Register(1, exception_type),
             Constant(2, kWasmI32, 1)}},
           {1, {}},
+      },
+      debug_side_table.get());
+}
+
+TEST(Regress1199526) {
+  EXPERIMENTAL_FLAG_SCOPE(eh);
+  LiftoffCompileEnvironment env;
+  ValueType exception_type = ValueType::Ref(HeapType::kExtern, kNonNullable);
+  auto debug_side_table = env.GenerateDebugSideTable(
+      {}, {},
+      {kExprTry, kVoidCode, kExprCallFunction, 0, kExprCatchAll, kExprLoop,
+       kVoidCode, kExprEnd, kExprEnd},
+      {});
+  CheckDebugSideTable(
+      {
+          // function entry.
+          {0, {}},
+          // break on entry.
+          {0, {}},
+          // function call.
+          {0, {}},
+          // loop stack check.
+          {1, {Stack(0, exception_type)}},
       },
       debug_side_table.get());
 }

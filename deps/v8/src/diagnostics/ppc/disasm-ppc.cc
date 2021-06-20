@@ -11,7 +11,7 @@
 //   NameConverter converter;
 //   Disassembler d(converter);
 //   for (byte* pc = begin; pc < end;) {
-//     v8::internal::EmbeddedVector<char, 256> buffer;
+//     v8::base::EmbeddedVector<char, 256> buffer;
 //     byte* prev_pc = pc;
 //     pc += d.InstructionDecode(buffer, pc);
 //     printf("%p    %08x      %s\n",
@@ -45,7 +45,7 @@ namespace internal {
 // more informative description.
 class Decoder {
  public:
-  Decoder(const disasm::NameConverter& converter, Vector<char> out_buffer)
+  Decoder(const disasm::NameConverter& converter, base::Vector<char> out_buffer)
       : converter_(converter), out_buffer_(out_buffer), out_buffer_pos_(0) {
     out_buffer_[out_buffer_pos_] = '\0';
   }
@@ -89,7 +89,7 @@ class Decoder {
   void DecodeExt6(Instruction* instr);
 
   const disasm::NameConverter& converter_;
-  Vector<char> out_buffer_;
+  base::Vector<char> out_buffer_;
   int out_buffer_pos_;
 };
 
@@ -270,6 +270,11 @@ int Decoder::FormatOption(Instruction* instr, const char* format) {
       out_buffer_pos_ += SNPrintF(out_buffer_ + out_buffer_pos_, "%d", value);
       return 3;
     }
+    case 'S': {  // SIM
+      int32_t value = static_cast<int32_t>(SIGN_EXT_IMM5(instr->Bits(20, 16)));
+      out_buffer_pos_ += SNPrintF(out_buffer_ + out_buffer_pos_, "%d", value);
+      return 3;
+    }
     case 'U': {  // UIM
       int32_t value = instr->Bits(20, 16);
       out_buffer_pos_ += SNPrintF(out_buffer_ + out_buffer_pos_, "%d", value);
@@ -408,6 +413,16 @@ void Decoder::UnknownFormat(Instruction* instr, const char* name) {
 }
 
 void Decoder::DecodeExt0(Instruction* instr) {
+  // Some encodings have integers hard coded in the middle, handle those first.
+  switch (EXT0 | (instr->BitField(20, 16)) | (instr->BitField(10, 0))) {
+#define DECODE_VX_D_FORM__INSTRUCTIONS(name, opcode_name, opcode_value) \
+  case opcode_name: {                                                   \
+    Format(instr, #name " 'Vt, 'Vb");                                   \
+    return;                                                             \
+  }
+    PPC_VX_OPCODE_D_FORM_LIST(DECODE_VX_D_FORM__INSTRUCTIONS)
+#undef DECODE_VX_D_FORM__INSTRUCTIONS
+  }
   // Some encodings are 5-0 bits, handle those first
   switch (EXT0 | (instr->BitField(5, 0))) {
 #define DECODE_VA_A_FORM__INSTRUCTIONS(name, opcode_name, opcode_value) \
@@ -450,6 +465,13 @@ void Decoder::DecodeExt0(Instruction* instr) {
   }
     PPC_VX_OPCODE_C_FORM_LIST(DECODE_VX_C_FORM__INSTRUCTIONS)
 #undef DECODE_VX_C_FORM__INSTRUCTIONS
+#define DECODE_VX_E_FORM__INSTRUCTIONS(name, opcode_name, opcode_value) \
+  case opcode_name: {                                                   \
+    Format(instr, #name " 'Vt, 'SIM");                                  \
+    return;                                                             \
+  }
+    PPC_VX_OPCODE_E_FORM_LIST(DECODE_VX_E_FORM__INSTRUCTIONS)
+#undef DECODE_VX_E_FORM__INSTRUCTIONS
   }
 }
 
@@ -638,6 +660,10 @@ void Decoder::DecodeExt2(Instruction* instr) {
       Format(instr, "lxvd    'Xt, 'ra, 'rb");
       return;
     }
+    case LXVX: {
+      Format(instr, "lxvx    'Xt, 'ra, 'rb");
+      return;
+    }
     case LXSDX: {
       Format(instr, "lxsdx    'Xt, 'ra, 'rb");
       return;
@@ -656,6 +682,10 @@ void Decoder::DecodeExt2(Instruction* instr) {
     }
     case STXVD: {
       Format(instr, "stxvd   'Xs, 'ra, 'rb");
+      return;
+    }
+    case STXVX: {
+      Format(instr, "stxvx   'Xs, 'ra, 'rb");
       return;
     }
     case STXSDX: {
@@ -1068,11 +1098,27 @@ void Decoder::DecodeExt2(Instruction* instr) {
       return;
     }
     case MTVSRDD: {
-      Format(instr, "mtvsrwz 'Xt, 'ra");
+      Format(instr, "mtvsrdd 'Xt, 'ra");
       return;
     }
     case LDBRX: {
       Format(instr, "ldbrx   'rt, 'ra, 'rb");
+      return;
+    }
+    case LWBRX: {
+      Format(instr, "lwbrx   'rt, 'ra, 'rb");
+      return;
+    }
+    case STDBRX: {
+      Format(instr, "stdbrx  'rs, 'ra, 'rb");
+      return;
+    }
+    case STWBRX: {
+      Format(instr, "stwbrx  'rs, 'ra, 'rb");
+      return;
+    }
+    case STHBRX: {
+      Format(instr, "sthbrx  'rs, 'ra, 'rb");
       return;
     }
     case MTCRF: {
@@ -1277,12 +1323,6 @@ void Decoder::DecodeExt5(Instruction* instr) {
 }
 
 void Decoder::DecodeExt6(Instruction* instr) {
-  switch (EXT6 | (instr->BitField(10, 2))) {
-    case XXBRQ: {
-      Format(instr, "xxbrq  'Xt, 'Xb");
-      return;
-    }
-  }
   switch (EXT6 | (instr->BitField(10, 1))) {
     case XXSPLTIB: {
       Format(instr, "xxspltib  'Xt, 'IMM8");
@@ -1298,6 +1338,16 @@ void Decoder::DecodeExt6(Instruction* instr) {
     PPC_XX3_OPCODE_LIST(DECODE_XX3_INSTRUCTIONS)
 #undef DECODE_XX3_INSTRUCTIONS
   }
+  // Some encodings have integers hard coded in the middle, handle those first.
+  switch (EXT6 | (instr->BitField(20, 16)) | (instr->BitField(10, 2))) {
+#define DECODE_XX2_B_INSTRUCTIONS(name, opcode_name, opcode_value) \
+  case opcode_name: {                                              \
+    Format(instr, #name " 'Xt, 'Xb");                              \
+    return;                                                        \
+  }
+    PPC_XX2_OPCODE_B_FORM_LIST(DECODE_XX2_B_INSTRUCTIONS)
+#undef DECODE_XX2_B_INSTRUCTIONS
+  }
   switch (EXT6 | (instr->BitField(10, 2))) {
 #define DECODE_XX2_A_INSTRUCTIONS(name, opcode_name, opcode_value) \
   case opcode_name: {                                              \
@@ -1305,8 +1355,8 @@ void Decoder::DecodeExt6(Instruction* instr) {
     return;                                                        \
   }
     PPC_XX2_OPCODE_A_FORM_LIST(DECODE_XX2_A_INSTRUCTIONS)
-  }
 #undef DECODE_XX2_A_INSTRUCTIONS
+  }
   Unknown(instr);  // not used by V8
 }
 
@@ -1674,7 +1724,7 @@ const char* NameConverter::NameInCode(byte* addr) const {
 
 //------------------------------------------------------------------------------
 
-int Disassembler::InstructionDecode(v8::internal::Vector<char> buffer,
+int Disassembler::InstructionDecode(v8::base::Vector<char> buffer,
                                     byte* instruction) {
   v8::internal::Decoder d(converter_, buffer);
   return d.InstructionDecode(instruction);
@@ -1688,7 +1738,7 @@ void Disassembler::Disassemble(FILE* f, byte* begin, byte* end,
   NameConverter converter;
   Disassembler d(converter, unimplemented_action);
   for (byte* pc = begin; pc < end;) {
-    v8::internal::EmbeddedVector<char, 128> buffer;
+    v8::base::EmbeddedVector<char, 128> buffer;
     buffer[0] = '\0';
     byte* prev_pc = pc;
     pc += d.InstructionDecode(buffer, pc);

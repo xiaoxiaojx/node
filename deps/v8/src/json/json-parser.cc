@@ -10,6 +10,7 @@
 #include "src/numbers/hash-seed-inl.h"
 #include "src/objects/field-type.h"
 #include "src/objects/hash-table-inl.h"
+#include "src/objects/map-updater.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/property-descriptor.h"
 #include "src/strings/char-predicates-inl.h"
@@ -509,17 +510,18 @@ Handle<Object> JsonParser<Char>::BuildJsonObject(
       }
       Handle<FieldType> value_type =
           value->OptimalType(isolate(), representation);
-      Map::GeneralizeField(isolate(), target, descriptor_index,
-                           details.constness(), representation, value_type);
+      MapUpdater::GeneralizeField(isolate(), target, descriptor_index,
+                                  details.constness(), representation,
+                                  value_type);
     } else if (expected_representation.IsHeapObject() &&
                !target->instance_descriptors(isolate())
                     .GetFieldType(descriptor_index)
                     .NowContains(value)) {
       Handle<FieldType> value_type =
           value->OptimalType(isolate(), expected_representation);
-      Map::GeneralizeField(isolate(), target, descriptor_index,
-                           details.constness(), expected_representation,
-                           value_type);
+      MapUpdater::GeneralizeField(isolate(), target, descriptor_index,
+                                  details.constness(), expected_representation,
+                                  value_type);
     } else if (expected_representation.IsDouble() && value->IsSmi()) {
       new_mutable_double++;
     }
@@ -601,8 +603,8 @@ Handle<Object> JsonParser<Char>::BuildJsonObject(
           mutable_double_address += kMutableDoubleSize;
         } else {
           DCHECK(value.IsHeapNumber());
-          HeapObject::cast(value).synchronized_set_map(
-              *factory()->heap_number_map());
+          HeapObject::cast(value).set_map(*factory()->heap_number_map(),
+                                          kReleaseStore);
         }
       }
       object->RawFastInobjectPropertyAtPut(index, value, mode);
@@ -620,6 +622,11 @@ Handle<Object> JsonParser<Char>::BuildJsonObject(
         DCHECK_EQ(mutable_double_address, end);
       }
 #endif
+      // Before setting the length of mutable_double_buffer back to zero, we
+      // must ensure that the sweeper is not running or has already swept the
+      // object's page. Otherwise the GC can add the contents of
+      // mutable_double_buffer to the free list.
+      isolate()->heap()->EnsureSweepingCompleted(mutable_double_buffer);
       mutable_double_buffer->set_length(0);
     }
   }
@@ -953,7 +960,7 @@ Handle<Object> JsonParser<Char>::ParseJsonNumber() {
       AdvanceToNonDecimal();
     }
 
-    Vector<const Char> chars(start, cursor_ - start);
+    base::Vector<const Char> chars(start, cursor_ - start);
     number = StringToDouble(chars,
                             NO_FLAGS,  // Hex, octal or trailing junk.
                             std::numeric_limits<double>::quiet_NaN());
@@ -967,7 +974,7 @@ Handle<Object> JsonParser<Char>::ParseJsonNumber() {
 namespace {
 
 template <typename Char>
-bool Matches(const Vector<const Char>& chars, Handle<String> string) {
+bool Matches(const base::Vector<const Char>& chars, Handle<String> string) {
   DCHECK(!string.is_null());
   return string->IsEqualTo(chars);
 }
@@ -992,7 +999,7 @@ Handle<String> JsonParser<Char>::DecodeString(
 
     if (!string.internalize()) return intermediate;
 
-    Vector<const SinkChar> data(dest, string.length());
+    base::Vector<const SinkChar> data(dest, string.length());
     if (!hint.is_null() && Matches(data, hint)) return hint;
   }
 
@@ -1006,7 +1013,7 @@ Handle<String> JsonParser<Char>::MakeString(const JsonString& string,
 
   if (string.internalize() && !string.has_escape()) {
     if (!hint.is_null()) {
-      Vector<const Char> data(chars_ + string.start(), string.length());
+      base::Vector<const Char> data(chars_ + string.start(), string.length());
       if (Matches(data, hint)) return hint;
     }
     if (chars_may_relocate_) {
@@ -1014,7 +1021,7 @@ Handle<String> JsonParser<Char>::MakeString(const JsonString& string,
                                           string.start(), string.length(),
                                           string.needs_conversion());
     }
-    Vector<const Char> chars(chars_ + string.start(), string.length());
+    base::Vector<const Char> chars(chars_ + string.start(), string.length());
     return factory()->InternalizeString(chars, string.needs_conversion());
   }
 

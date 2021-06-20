@@ -155,8 +155,8 @@ std::ostream& operator<<(std::ostream& os, const InstructionOperand& op) {
           return os << "(R)";
         case UnallocatedOperand::MUST_HAVE_SLOT:
           return os << "(S)";
-        case UnallocatedOperand::SAME_AS_FIRST_INPUT:
-          return os << "(1)";
+        case UnallocatedOperand::SAME_AS_INPUT:
+          return os << "(" << unalloc->input_index() << ")";
         case UnallocatedOperand::REGISTER_OR_SLOT:
           return os << "(-)";
         case UnallocatedOperand::REGISTER_OR_SLOT_OR_CONSTANT:
@@ -247,6 +247,8 @@ std::ostream& operator<<(std::ostream& os, const InstructionOperand& op) {
         case MachineRepresentation::kCompressed:
           os << "|c";
           break;
+        case MachineRepresentation::kMapWord:
+          UNREACHABLE();
       }
       return os << "]";
     }
@@ -605,7 +607,12 @@ InstructionBlock::InstructionBlock(Zone* zone, RpoNumber rpo_number,
       loop_end_(loop_end),
       dominator_(dominator),
       deferred_(deferred),
-      handler_(handler) {}
+      handler_(handler),
+      switch_target_(false),
+      alignment_(false),
+      needs_frame_(false),
+      must_construct_frame_(false),
+      must_deconstruct_frame_(false) {}
 
 size_t InstructionBlock::PredecessorIndexOf(RpoNumber rpo_number) const {
   size_t j = 0;
@@ -914,6 +921,7 @@ static MachineRepresentation FilterRepresentation(MachineRepresentation rep) {
     case MachineRepresentation::kCompressed:
       return rep;
     case MachineRepresentation::kNone:
+    case MachineRepresentation::kMapWord:
       break;
   }
 

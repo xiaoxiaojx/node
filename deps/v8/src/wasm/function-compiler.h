@@ -68,8 +68,8 @@ struct WasmCompilationResult {
   std::unique_ptr<uint8_t[]> instr_buffer;
   uint32_t frame_slot_count = 0;
   uint32_t tagged_parameter_slots = 0;
-  OwnedVector<byte> source_positions;
-  OwnedVector<byte> protected_instructions_data;
+  base::OwnedVector<byte> source_positions;
+  base::OwnedVector<byte> protected_instructions_data;
   int func_index = kAnonymousFuncIndex;
   ExecutionTier requested_tier;
   ExecutionTier result_tier;
@@ -84,9 +84,9 @@ class V8_EXPORT_PRIVATE WasmCompilationUnit final {
   WasmCompilationUnit(int index, ExecutionTier tier, ForDebugging for_debugging)
       : func_index_(index), tier_(tier), for_debugging_(for_debugging) {}
 
-  WasmCompilationResult ExecuteCompilation(
-      WasmEngine*, CompilationEnv*, const std::shared_ptr<WireBytesStorage>&,
-      Counters*, WasmFeatures* detected);
+  WasmCompilationResult ExecuteCompilation(WasmEngine*, CompilationEnv*,
+                                           const WireBytesStorage*, Counters*,
+                                           WasmFeatures* detected);
 
   ExecutionTier tier() const { return tier_; }
   int func_index() const { return func_index_; }
@@ -96,13 +96,13 @@ class V8_EXPORT_PRIVATE WasmCompilationUnit final {
                                   ExecutionTier);
 
  private:
-  WasmCompilationResult ExecuteFunctionCompilation(
-      WasmEngine* wasm_engine, CompilationEnv* env,
-      const std::shared_ptr<WireBytesStorage>& wire_bytes_storage,
-      Counters* counters, WasmFeatures* detected);
+  WasmCompilationResult ExecuteFunctionCompilation(WasmEngine*, CompilationEnv*,
+                                                   const WireBytesStorage*,
+                                                   Counters*,
+                                                   WasmFeatures* detected);
 
-  WasmCompilationResult ExecuteImportWrapperCompilation(WasmEngine* engine,
-                                                        CompilationEnv* env);
+  WasmCompilationResult ExecuteImportWrapperCompilation(WasmEngine*,
+                                                        CompilationEnv*);
 
   int func_index_;
   ExecutionTier tier_;
@@ -127,8 +127,10 @@ class V8_EXPORT_PRIVATE JSToWasmWrapperCompilationUnit final {
                                  AllowGeneric allow_generic);
   ~JSToWasmWrapperCompilationUnit();
 
+  Isolate* isolate() const { return isolate_; }
+
   void Execute();
-  Handle<Code> Finalize(Isolate* isolate);
+  Handle<Code> Finalize();
 
   bool is_import() const { return is_import_; }
   const FunctionSig* sig() const { return sig_; }
@@ -146,6 +148,11 @@ class V8_EXPORT_PRIVATE JSToWasmWrapperCompilationUnit final {
                                                      const WasmModule* module);
 
  private:
+  // Wrapper compilation is bound to an isolate. Concurrent accesses to the
+  // isolate (during the "Execute" phase) must be audited carefully, i.e. we
+  // should only access immutable information (like the root table). The isolate
+  // is guaranteed to be alive when this unit executes.
+  Isolate* isolate_;
   bool is_import_;
   const FunctionSig* sig_;
   bool use_generic_wrapper_;

@@ -16,6 +16,8 @@
 #include "src/base/platform/platform.h"
 #include "src/codegen/cpu-features.h"
 #include "src/logging/counters.h"
+#include "src/logging/tracing-flags.h"
+#include "src/tracing/tracing-category-observer.h"
 #include "src/utils/allocation.h"
 #include "src/utils/memcopy.h"
 #include "src/utils/ostreams.h"
@@ -728,7 +730,7 @@ int FlagList::SetFlagsFromString(const char* str, size_t len) {
   }
 
   // allocate argument array
-  ScopedVector<char*> argv(argc);
+  base::ScopedVector<char*> argv(argc);
 
   // split the flags string into arguments
   argc = 1;  // be compatible with SetFlagsFromCommandLine()

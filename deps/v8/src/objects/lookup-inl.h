@@ -7,9 +7,12 @@
 
 #include "src/objects/lookup.h"
 
+// Include other inline headers *after* including lookup.h, such that e.g. the
+// definition of LookupIterator is available (and this comment prevents
+// clang-format from merging that include into the following ones).
 #include "src/handles/handles-inl.h"
 #include "src/heap/factory-inl.h"
-#include "src/logging/counters.h"
+#include "src/logging/runtime-call-stats-scope.h"
 #include "src/objects/api-callbacks.h"
 #include "src/objects/internal-index.h"
 #include "src/objects/map-inl.h"
@@ -74,7 +77,11 @@ LookupIterator::LookupIterator(Isolate* isolate, Handle<Object> receiver,
     // If we're not looking at a TypedArray, we will need the key represented
     // as an internalized string.
     if (index_ > JSObject::kMaxElementIndex &&
-        !lookup_start_object->IsJSTypedArray()) {
+        !lookup_start_object->IsJSTypedArray(isolate_)
+#if V8_ENABLE_WEBASSEMBLY
+        && !lookup_start_object->IsWasmArray(isolate_)
+#endif  // V8_ENABLE_WEBASSEMBLY
+    ) {
       if (name_.is_null()) {
         name_ = isolate->factory()->SizeToString(index_);
       }
@@ -169,7 +176,8 @@ Handle<Name> LookupIterator::GetName() {
 
 bool LookupIterator::IsElement(JSReceiver object) const {
   return index_ <= JSObject::kMaxElementIndex ||
-         (index_ != kInvalidIndex && object.map().has_typed_array_elements());
+         (index_ != kInvalidIndex &&
+          object.map().has_any_typed_array_or_wasm_array_elements());
 }
 
 bool LookupIterator::is_dictionary_holder() const {
@@ -209,7 +217,7 @@ bool LookupIterator::IsCacheableTransition() {
 // static
 void LookupIterator::UpdateProtector(Isolate* isolate, Handle<Object> receiver,
                                      Handle<Name> name) {
-  RuntimeCallTimerScope scope(isolate, RuntimeCallCounterId::kUpdateProtector);
+  RCS_SCOPE(isolate, RuntimeCallCounterId::kUpdateProtector);
 
   // This list must be kept in sync with
   // CodeStubAssembler::CheckForAssociatedProtector!

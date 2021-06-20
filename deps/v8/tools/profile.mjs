@@ -36,6 +36,7 @@ export class SourcePosition {
     this.line = line;
     this.column = column;
     this.entries = [];
+    this.isFunction = false;
   }
 
   addEntry(entry) {
@@ -46,14 +47,25 @@ export class SourcePosition {
     return `${this.script.name}:${this.line}:${this.column}`;
   }
 
-  toStringLong() {
-    return this.toString();
+  get functionPosition() {
+    // TODO(cbruni)
+    return undefined;
+  }
+
+  get toolTipDict() {
+    return {
+      title: this.toString(),
+      __this__: this,
+      script: this.script,
+      entries: this.entries,
+    }
   }
 }
 
 export class Script {
-  name;
+  url;
   source;
+  name;
   // Map<line, Map<column, SourcePosition>>
   lineToColumn = new Map();
   _entries = [];
@@ -63,8 +75,9 @@ export class Script {
     this.sourcePositions = [];
   }
 
-  update(name, source) {
-    this.name = name;
+  update(url, source) {
+    this.url = url;
+    this.name = Script.getShortestUniqueName(url, this);
     this.source = source;
   }
 
@@ -74,6 +87,11 @@ export class Script {
 
   get entries() {
     return this._entries;
+  }
+
+  findFunctionSourcePosition(sourcePosition) {
+    // TODO(cbruni) implmenent
+    return undefined;
   }
 
   addSourcePosition(line, column, entry) {
@@ -103,8 +121,33 @@ export class Script {
     return `Script(${this.id}): ${this.name}`;
   }
 
-  toStringLong() {
-    return this.source;
+  get toolTipDict() {
+    return {
+      title: this.toString(),
+      __this__: this,
+      id: this.id,
+      url: this.url,
+      source: this.source,
+      sourcePositions: this.sourcePositions
+    }
+  }
+
+  static getShortestUniqueName(url, script) {
+    const parts = url.split('/');
+    const filename = parts[parts.length -1];
+    const dict = this._dict ?? (this._dict = new Map());
+    const matchingScripts = dict.get(filename);
+    if (matchingScripts == undefined) {
+      dict.set(filename, [script]);
+      return filename;
+    }
+    // TODO: find shortest unique substring
+    // Update all matching scripts to have a unique filename again.
+    for (let matchingScript of matchingScripts) {
+      matchingScript.name = script.url
+    }
+    matchingScripts.push(script);
+    return url;
   }
 }
 
@@ -147,13 +190,20 @@ export class Profile {
   topDownTree_ = new CallTree();
   bottomUpTree_ = new CallTree();
   c_entries_ = {};
-  ticks_ = [];
   scripts_ = [];
   urlToScript_ = new Map();
 
+  serializeVMSymbols() {
+    let result = this.codeMap_.getAllStaticEntriesWithAddresses();
+    result.concat(this.codeMap_.getAllLibraryEntriesWithAddresses())
+    return result.map(([startAddress, codeEntry]) => {
+      return [codeEntry.getName(), startAddress, startAddress + codeEntry.size]
+    });
+  }
+
   /**
    * Returns whether a function with the specified name must be skipped.
-   * Should be overriden by subclasses.
+   * Should be overridden by subclasses.
    *
    * @param {string} name Function name.
    */
@@ -182,9 +232,25 @@ export class Profile {
     COMPILED: 0,
     IGNITION: 1,
     BASELINE: 2,
-    NATIVE_CONTEXT_INDEPENDENT: 3,
     TURBOPROP: 4,
     TURBOFAN: 5,
+  }
+
+  static VMState = {
+    JS: 0,
+    GC: 1,
+    PARSER: 2,
+    BYTECODE_COMPILER: 3,
+    // TODO(cbruni): add BASELINE_COMPILER
+    COMPILER: 4,
+    OTHER: 5,
+    EXTERNAL: 6,
+    IDLE: 7,
+  }
+
+  static CodeType = {
+    CPP: 0,
+    SHARED_LIB: 1
   }
 
   /**
@@ -198,8 +264,6 @@ export class Profile {
         return this.CodeState.IGNITION;
       case '^':
         return this.CodeState.BASELINE;
-      case '-':
-        return this.CodeState.NATIVE_CONTEXT_INDEPENDENT;
       case '+':
         return this.CodeState.TURBOPROP;
       case '*':
@@ -215,14 +279,34 @@ export class Profile {
       return "Unopt";
     } else if (state === this.CodeState.BASELINE) {
       return "Baseline";
-    } else if (state === this.CodeState.NATIVE_CONTEXT_INDEPENDENT) {
-      return "NCI";
     } else if (state === this.CodeState.TURBOPROP) {
       return "Turboprop";
     } else if (state === this.CodeState.TURBOFAN) {
       return "Opt";
     }
     throw new Error(`unknown code state: ${state}`);
+  }
+
+  static vmStateString(state) {
+    switch (state) {
+      case this.VMState.JS:
+        return 'JS';
+      case this.VMState.GC:
+        return 'GC';
+      case this.VMState.PARSER:
+        return 'Parse';
+      case this.VMState.BYTECODE_COMPILER:
+        return 'Compile Bytecode';
+      case this.VMState.COMPILER:
+        return 'Compile';
+      case this.VMState.OTHER:
+        return 'Other';
+      case this.VMState.EXTERNAL:
+        return 'External';
+      case this.VMState.IDLE:
+        return 'Idle';
+    }
+    return 'unknown';
   }
 
   /**
@@ -436,10 +520,11 @@ export class Profile {
    * @param {Array<number>} stack Stack sample.
    */
   recordTick(time_ns, vmState, stack) {
-    const processedStack = this.resolveAndFilterFuncs_(stack);
-    this.bottomUpTree_.addPath(processedStack);
-    processedStack.reverse();
-    this.topDownTree_.addPath(processedStack);
+    const {nameStack, entryStack} = this.resolveAndFilterFuncs_(stack);
+    this.bottomUpTree_.addPath(nameStack);
+    nameStack.reverse();
+    this.topDownTree_.addPath(nameStack);
+    return entryStack;
   }
 
   /**
@@ -449,12 +534,15 @@ export class Profile {
    * @param {Array<number>} stack Stack sample.
    */
   resolveAndFilterFuncs_(stack) {
-    const result = [];
+    const nameStack = [];
+    const entryStack = [];
     let last_seen_c_function = '';
     let look_for_first_c_function = false;
     for (let i = 0; i < stack.length; ++i) {
-      const entry = this.codeMap_.findEntry(stack[i]);
+      const pc = stack[i];
+      const entry = this.codeMap_.findEntry(pc);
       if (entry) {
+        entryStack.push(entry);
         const name = entry.getName();
         if (i === 0 && (entry.type === 'CPP' || entry.type === 'SHARED_LIB')) {
           look_for_first_c_function = true;
@@ -463,16 +551,15 @@ export class Profile {
           last_seen_c_function = name;
         }
         if (!this.skipThisFunction(name)) {
-          result.push(name);
+          nameStack.push(name);
         }
       } else {
-        this.handleUnknownCode(Profile.Operation.TICK, stack[i], i);
-        if (i === 0) result.push("UNKNOWN");
+        this.handleUnknownCode(Profile.Operation.TICK, pc, i);
+        if (i === 0) nameStack.push("UNKNOWN");
+        entryStack.push(pc);
       }
-      if (look_for_first_c_function &&
-        i > 0 &&
-        (!entry || entry.type !== 'CPP') &&
-        last_seen_c_function !== '') {
+      if (look_for_first_c_function && i > 0 &&
+          (!entry || entry.type !== 'CPP') && last_seen_c_function !== '') {
         if (this.c_entries_[last_seen_c_function] === undefined) {
           this.c_entries_[last_seen_c_function] = 0;
         }
@@ -480,7 +567,7 @@ export class Profile {
         look_for_first_c_function = false;  // Found it, we're done.
       }
     }
-    return result;
+    return {nameStack, entryStack};
   }
 
   /**
@@ -751,6 +838,10 @@ class FunctionEntry extends CodeEntry {
   getSourceCode() {
     // All code entries should map to the same source positions.
     return this._codeEntries.values().next().value.getSourceCode();
+  }
+
+  get codeEntries() {
+    return this._codeEntries;
   }
 
   /**
@@ -1169,7 +1260,9 @@ JsonProfile.prototype.addSourcePositions = function (
 };
 
 JsonProfile.prototype.addScriptSource = function (id, url, source) {
-  this.scripts_[id] = new Script(id, url, source);
+  const script = new Script(id);
+  script.update(url, source);
+  this.scripts_[id] = script;
 };
 
 JsonProfile.prototype.deoptCode = function (

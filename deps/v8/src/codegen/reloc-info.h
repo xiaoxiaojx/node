@@ -328,8 +328,8 @@ class RelocInfo {
 #ifdef ENABLE_DISASSEMBLER
   // Printing
   static const char* RelocModeName(Mode rmode);
-  void Print(Isolate* isolate, std::ostream& os);  // NOLINT
-#endif                                             // ENABLE_DISASSEMBLER
+  void Print(Isolate* isolate, std::ostream& os);
+#endif  // ENABLE_DISASSEMBLER
 #ifdef VERIFY_HEAP
   void Verify(Isolate* isolate);
 #endif
@@ -432,9 +432,9 @@ class V8_EXPORT_PRIVATE RelocIterator : public Malloced {
   explicit RelocIterator(const CodeDesc& desc, int mode_mask = -1);
   explicit RelocIterator(const CodeReference code_reference,
                          int mode_mask = -1);
-  explicit RelocIterator(Vector<byte> instructions,
-                         Vector<const byte> reloc_info, Address const_pool,
-                         int mode_mask = -1);
+  explicit RelocIterator(base::Vector<byte> instructions,
+                         base::Vector<const byte> reloc_info,
+                         Address const_pool, int mode_mask = -1);
   RelocIterator(RelocIterator&&) V8_NOEXCEPT = default;
 
   RelocIterator(const RelocIterator&) = delete;
